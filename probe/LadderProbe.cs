@@ -113,7 +113,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case "PR2": targetTicks = 40; targetSignal = "P_T2"; break;
                 default:    targetTicks = 80; targetSignal = "P_T3"; break;
             }
-            double targetPx = Position.AveragePrice + targetTicks * TickSize;
+            double targetPx = price + targetTicks * TickSize;
             ExitLongLimit(0, true, 1, targetPx, targetSignal, name);
 
             if (Position.Quantity == 3)
