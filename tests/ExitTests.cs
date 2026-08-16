@@ -15,9 +15,11 @@ public static class ExitTests
             T.Check(p.Valid, "plan is valid");
             T.CheckBits(p.StopPrice, 17990.0, "stop is entry minus StopPoints");
             T.Check(p.Rungs.Count == 1, "the control arm has exactly one rung");
+            T.Check(p.Rungs[0].Index == 1, "the single rung is 1-based index 1");
             T.CheckBits(p.Rungs[0].Price, 18040.0, "4R above entry");
             T.Check(p.Rungs[0].Quantity == 4, "the single rung carries the whole position");
             T.Check(!p.Rungs[0].IsRunner, "the control arm has no runner");
+            T.Check(!p.Rungs[0].IsStructural, "the control arm's rung is not structural");
             T.Check(p.TotalQuantity == 4, "total quantity equals contracts");
         }
 
@@ -33,10 +35,13 @@ public static class ExitTests
         {
             var p = MtLadder.BuildSingleTarget(MtDir.None, 18000, 10.0, 4.0, 4, 0.25);
             T.Check(!p.Valid, "MtDir.None yields an invalid plan");
+            T.Check(p.Rungs != null && p.Rungs.Count == 0, "an invalid plan still has an empty, non-null Rungs list");
             var q = MtLadder.BuildSingleTarget(MtDir.Long, 18000, 0.0, 4.0, 4, 0.25);
             T.Check(!q.Valid, "a zero stop yields an invalid plan");
             var r = MtLadder.BuildSingleTarget(MtDir.Long, 18000, 10.0, 4.0, 0, 0.25);
             T.Check(!r.Valid, "zero contracts yields an invalid plan");
+            var s = MtLadder.BuildSingleTarget(MtDir.Long, 18000, 10.0, 0.0, 4, 0.25);
+            T.Check(!s.Valid, "a zero targetR yields an invalid plan");
         }
 
         // Every emitted price is tick-rounded. 3.3R on a 10-point stop = 33 points,
