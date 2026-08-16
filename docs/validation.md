@@ -222,3 +222,101 @@ reachable.
 - **The ≥100 out-of-sample gate is not yet reachable from data already on disk.** This is a
   scheduling fact for Javier to act on (start recording/downloading forward Replay sessions now),
   not a design decision for this repo to make.
+
+---
+
+## Mirror fidelity (Task 9)
+
+**Scope.** This mirror covers design.md S7, the ladder EXIT only:
+`propsim/mean_tick.py`'s `build_ladder()` ports `MtLadder.BuildLadder`
+(`ninjascript/MeanTickExits.cs`), and `resolve_ladder()` calls PropSim's
+`resolve()` (`PropSim/engine.py:1085`) K times on the same `entry_idx` -- one
+call per surviving rung, each carrying that rung's own `contracts` slice and
+its own target -- then sums the resulting Trades. It does **not** port S4's
+detection (4H PD arrays, the 15-minute rejection block) to Python; that stays
+C#-only, and no task in this project's plan ports it. A line in this file's
+Phase 0c section anticipates re-running `cluster_histogram.py` "once Task 9's
+order-block and rejection-block detectors exist in Python" -- that expectation
+was set before this task's actual scope was read from the brief; Task 9 built
+the exit mirror, not a detection mirror, and that re-run has no code to run
+against yet.
+
+**What is EXACT.** P&L, win rate, per-rung fill statistics (entry/exit price,
+exit reason), because `resolve()` is linear in `contracts` and each rung is
+resolved as its own complete, correctly-sized position from the same entry to
+its own exit -- summing K exact per-leg P&Ls gives the exact combined P&L.
+
+**What is WRONG, KNOWINGLY AND BOUNDEDLY: `intra_mdd`, and `mae` with it.**
+Each of the K `resolve()` calls computes its own worst excursion over its own
+window (entry to that rung's own exit) at its own rung-sized `contracts`:
+`intra_mdd` as the fall from a running peak set inside that call, `mae` as the
+worst print against entry seen anywhere in that call's window
+(`PropSim/engine.py:1310` and `:1346-1353`). Summing the K results adds
+together excursions that were each maximised **independently**, over windows
+of different lengths -- the runner's window outlives rung 1's, whose own
+window ends the moment rung 1's target fills. That is a sum of per-leg
+maxima, not the single simultaneous worst instant the real ladder (one
+position, stepping down in size as each rung closes) actually lived through,
+and a sum of independently-maximised quantities can only be **>=** the true
+combined figure, never <. Both figures are therefore overstated, in the same
+direction, by the same mechanism -- not just `intra_mdd` as design.md S7
+names, but `mae` too, for the identical reason and by the same argument (asked
+of this task explicitly; the conclusion is that it applies to both, not just
+the one named in the design doc).
+
+The prop breach test is `max(hwm - balance - mae, intra_mdd)`
+(`PropSim/engine.py:1067`). Since **both** of that formula's data-dependent
+inputs are inflated or exact here, and neither is ever deflated, this mirror
+is **conservative on breach** end to end. **It must never be used to argue
+that a MeanTick variant is safe** -- only that a variant it calls unsafe is
+worth checking more carefully, and that a variant it calls safe still needs a
+check that does not share this reduction (a real Market Replay run, or a
+future engine.py extension that tracks the position's true declining size).
+
+This is a declared reduction, which is the house standard -- see PatternZone,
+which shipped with no mirror at all and said so. An undeclared reduction is
+how a false safety claim gets made; this one is written down in the module's
+own docstring and here, next to any number derived from it, on purpose.
+
+**What is UNTESTED, stated as a limitation rather than implied by omission.**
+`golden_ladder.csv` holds rung SCHEDULES -- `build_ladder()`'s output -- not
+resolved trades; no fixture exercises `resolve_ladder()`'s use of `resolve()`
+against real tick data, because none was in scope to build (three named
+fixtures were specified for the schedule, not for a resolved-trade sequence).
+`resolve_ladder()` is written directly against `resolve()`'s real, current
+signature and defaults `limit_px` to the rung's shared entry price, modelling
+design.md S6.1's K independent limit orders resting at one price (the
+behaviour the Phase 0a probe observed directly -- all three legs filled at
+29840.25). That default is an assumption this validation names but has not
+independently confirmed for `resolve_ladder()` itself: it is correct by
+inspection against the probe's own observation and against `resolve()`'s
+documented contract, not by a golden-fixture parity check. `propsim/mean_tick.py`
+carries its own runnable self-check (`python3 propsim/mean_tick.py`) covering
+both halves -- `build_ladder()` against a hand-computed fixture, and
+`resolve_ladder()` against a synthetic, monotonically-rising tape where every
+number is checkable by hand -- but a self-check that the author wrote is not
+the same claim as a fixture generated independently by the C# side, which is
+what the schedule parity gate below actually is.
+
+**Parity result.**
+
+```
+dotnet run --project tests          # OK  121 checks, writes tests/golden_ladder.csv
+python3 research/compare_mirror.py  # PARITY OK -- 3 fixtures, 8 rungs, all prices
+                                     # within 1e-9, all quantities and flags exact
+```
+
+Both commands were run for this task, in that order, against a freshly
+regenerated `golden_ladder.csv` (not a stale copy) -- exit code 0 on both.
+`compare_mirror.py` hardcodes the three fixtures' INPUT parameters
+(`rung1_r`, `rung2_r`, `structural_price`, `runner_price`, `contracts`,
+`tick_size`, `min_rung_ticks`) verbatim from the three `MtLadder.BuildLadder(...)`
+calls in `tests/ExitTests.cs`'s golden-CSV section, because the CSV itself
+records only what `BuildLadder` returned, not what it was given -- there is no
+way to recover the inputs from the outputs alone. **If `ExitTests.cs`'s three
+calls ever change, `FIXTURES` in `compare_mirror.py` must change with them, or
+the gate will silently compare against the wrong recipe.** No mismatch
+occurred in this run, so no engine needed correcting; had one occurred, the
+fix would have gone to whichever engine's arithmetic order differs from
+`MeanTickExits.cs`'s comment ("Arithmetic order is fixed and is not to be
+reassociated"), never to the 1e-9 tolerance.
