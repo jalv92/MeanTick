@@ -297,6 +297,4 @@ public static class DetectionTests
                     "one second short of the TTL is still alive");
         }
     }
-
-    private const int SessionEndSecTest = 11 * 3600;
 }
