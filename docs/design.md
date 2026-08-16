@@ -393,14 +393,16 @@ Two limits of this evidence, stated so they aren't overclaimed:
   both remain open and must be checked before any Analyzer or live-startup result on the
   real strategy is trusted.
 
-**Task 7 is UNBLOCKED and complete. Task 8 shipped (2026-08-16) with the stop side still
-UNOBSERVED** — round 3 (below) remains the outstanding measurement. `MeanTickStrategy.cs`'s
-bracket-death guard (§6.3) is the interim mitigation: scoped per rung, it logs the instant a
-stop or target dies while that rung's position is still open, converting an unmeasured risk
-into something visible instead of silent. `MeanTickExits.cs` is a pure rung-schedule builder —
-a target-side claim, and target-side independence is confirmed by run 1. The stop
-architecture lives in Task 8's order plumbing; round 3 is still what closes the question
-round 2 failed to measure.
+**Task 7 is UNBLOCKED and complete. Task 8 shipped (2026-08-16) with the stop side of its own
+shipped `Set*`-bracket architecture still UNOBSERVED** — round 3 (below) ran and measured the
+proposed pooled-stop alternative instead, confirming it survives submission and a full stop-out
+but leaving the partial-close case (a target filling before the stop) unmeasured under either
+design. `MeanTickStrategy.cs`'s bracket-death guard (§6.3) is the interim mitigation: scoped per
+rung, it logs the instant a stop or target dies while that rung's position is still open,
+converting an unmeasured risk into something visible instead of silent. `MeanTickExits.cs` is a
+pure rung-schedule builder — a target-side claim, and target-side independence is confirmed by
+run 1. The stop architecture lives in Task 8's order plumbing; the partial-close case is still
+what closes the question no round has yet measured.
 
 #### Phase 0a round 2 (2026-08-16, MNQ 09-26)
 
@@ -422,20 +424,56 @@ same-price rendering confound that round 3's instrumentation (distinct 40/41/42-
 distances, `OnOrderUpdate` logging `Order.Oco`, and market-order entries so the probe
 actually trades instead of waiting on a limit that never fills) exists to remove.
 
-#### Proposed alternative (pending the stop-side probe)
+#### Phase 0a round 3 (2026-08-04 Playback, MNQ)
 
-Not yet decided. §6.1's body above describes the design **as originally proposed** — whether
-it survives a partial close is unmeasured (stop-side is UNOBSERVED, per above), not reopened
-by any observed failure in round 2. A candidate replacement, to be settled by round 3's
-`PooledStopTest` mode (`probe/LadderProbe.cs`): one pooled,
-`""`-scoped `ExitLongStopMarket` for the whole position, plus K per-leg `ExitLongLimit`
-targets — all `Exit*` methods, no `Set*` calls. It is attractive because §5 already gives
-every rung the *same* stop price and §5.4 moves all legs to break-even together, so K
-per-leg stops would be K orders all carrying one number; a single pooled stop says the same
-thing once. This replaces §6.1's design only if the probe confirms the pooled stop is not
-itself OCO-killed by a per-leg target fill — otherwise it fails for the same reason the
-original per-signal design remains unverified: NT8 never documents OCO's grouping key, so
-any stop's survival under a partial close is unconfirmed until measured directly.
+`LadderProbe` run with `PooledStopTest = true`, MNQ 09-26, Playback101, 2026-08-04.
+`Effective StopTargetHandling = PerEntryExecution` printed at `State.DataLoaded`, closing the
+unknown round 1/2 left open (below): the property grid did not override the code.
+
+Three market entries `PR1/PR2/PR3` filled at 29840, position Long 3. Submitted from
+`OnExecutionUpdate`: three **per-leg** target limits, each `qty=1` with `FromEntrySignal` set —
+`P_T1@29845 (PR1)`, `P_T2@29850 (PR2)`, `P_T3@29860 (PR3)` — all reaching `state=Working`; one
+**pooled** `ExitLongStopMarket`, `qty=3`, `StopPrice=29830`, `FromEntrySignal=''` — also reaching
+`state=Working`. Price then went down before it went up: `P_S` filled `qty=3` at 29830, position
+→ Flat, and NT8 cancelled all three orphaned per-leg targets with *"Cancelled pending exit order,
+since associated position is closed."* **Every `ORDER` line shows `oco=` empty** — entries,
+per-leg targets and the pooled stop alike.
+
+**Established:**
+- A `""`-scoped pooled stop **coexists with per-leg target limits and is not OCO-killed at
+  submission**. That was the load-bearing unknown for the proposed option (c) architecture below,
+  and NT8 documents it nowhere in its reference set.
+- The pooled stop fills for its full quantity when hit.
+- Orphaned per-leg targets are cancelled cleanly by NT8 when the position closes — no manual
+  cleanup needed.
+- `Order.Oco` is empty on every `Exit*`-submitted order in this mode, so these orders are not in
+  an exposed OCO group at all.
+
+**NOT established — and this is the half that matters:**
+- **No per-leg target ever filled.** The stop hit first and took everything, so whether the
+  pooled stop **survives and auto-reduces from 3 to 2 when a target fills first** — the actual
+  partial-close case the whole design turns on — is *still* unobserved.
+- This run exercised the **`Exit*` path (`PooledStopTest = true`)**, the *proposed alternative*
+  below, not the shipped design. **MeanTick ships per-signal `Set*` brackets** (§6.1's body
+  above), and their stop-side behaviour remains unobserved after three probe runs.
+
+Net effect on the verdict: from "stop side entirely unobserved" to something more precise — the
+pooled-stop alternative is now partially validated at submission and on a full stop-out; the
+shipped `Set*` design is still unmeasured; the partial-close case is unmeasured under either.
+
+#### Proposed alternative (pending the partial-close case)
+
+Not fully decided. §6.1's body above describes the shipped design — per-signal `Set*` brackets —
+whose survival under a partial close remains unmeasured (see round 3, above). A candidate
+replacement, partially validated by round 3's `PooledStopTest` mode (`probe/LadderProbe.cs`): one
+pooled, `""`-scoped `ExitLongStopMarket` for the whole position, plus K per-leg `ExitLongLimit`
+targets — all `Exit*` methods, no `Set*` calls. It is attractive because §5 already gives every
+rung the *same* stop price and §5.4 moves all legs to break-even together, so K per-leg stops
+would be K orders all carrying one number; a single pooled stop says the same thing once. Round 3
+confirmed the pooled stop coexists with per-leg targets and is not OCO-killed at submission or on
+a full stop-out — but whether it **survives and auto-reduces** when a target fills first is the
+one observation still missing, and that observation is what would actually replace §6.1's shipped
+design.
 
 Round 1 (and the strategy-side portion of round 2, which never ran) used `StopTargetHandling`
 set in `SetDefaults` to `PerEntryExecution`. That setting was likely a no-op:
@@ -443,15 +481,12 @@ set in `SetDefaults` to `PerEntryExecution`. That setting was likely a no-op:
 in code changed nothing relative to an unset default. Worse, `managed_approach.md:131` states
 the *effective* value is read from the Strategies-window "Stop & target submission" property,
 which overrides whatever `SetDefaults` sets — so round 1's actual runtime value was never
-confirmed by the code at all. Round 3 adds a `State.DataLoaded` print of the live
-`StopTargetHandling` value for exactly this reason: it is the only way to know what actually
-ran.
+confirmed by the code at all. Round 3's `State.DataLoaded` print of the live
+`StopTargetHandling` value closed exactly this unknown (`PerEntryExecution`, confirmed above).
 
-`probe/` is deliberately **not deleted**: the stop side has never been observed — round 1
-never hit a stop and round 2 measured a manual-order artefact instead of the strategy — and
-round 3 instruments the probe (market entries, distinct stop distances, `Order.Oco` logging,
-the pooled-stop alternative) to make that observation for the first time. It stays in the
-tree until both the stop-side and Analyzer questions are closed.
+`probe/` is deliberately **not deleted**: the partial-close case — a target filling before the
+stop, and whether either bracket style survives it — has never been observed across three
+rounds. It stays in the tree until that observation exists.
 
 ### 6.2 Data series
 
