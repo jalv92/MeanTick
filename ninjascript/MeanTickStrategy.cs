@@ -138,6 +138,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxTradesPerDay  = 1;
                 EntryTtlMinutes  = 90;
                 UseClusterSkip   = false;   // A1: median same-dir gap measured at 8.75x the stop
+                VerboseGateDiagnostics = true;   // Sim/Replay-only right now; diagnosing IS the job
 
                 FreshBars4H      = 5;
                 ProximityAtrMult = 1.5;
@@ -176,6 +177,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         #region OnBarUpdate
 
         private bool _printedClockDiag;
+        private bool _printedAtrWarmupWarning;
 
         protected override void OnBarUpdate()
         {
@@ -199,6 +201,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     + " (Kind=" + now.Kind + ") -> computed ET " + TimeSpan.FromSeconds(diagSec).ToString(@"hh\:mm\:ss")
                     + ". This assumes an un-Kinded bar DateTime is TimeZoneInfo.Local, not NT8's own "
                     + "chart-display timezone -- verify this matches the chart's actual ET wall-clock time.");
+
+                // Same DataLoaded warning as below, repeated here on purpose: DataLoaded's own
+                // print scrolls away before the session starts, so this is the one Javier can
+                // actually still see once bars are flowing -- right beside the clock check,
+                // landing in the Output window together.
+                if (BarsPeriod.BarsPeriodType != BarsPeriodType.Minute || BarsPeriod.Value != 1)
+                    Print(Name + ": WARNING -- primary series is not 1-Minute. Every gate here "
+                        + "counts 1m bars and folds 15m/4H off it; this is a different experiment.");
             }
 
             if (Bars.IsFirstBarOfSession)
@@ -226,8 +236,25 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Gate 2 (the 15m rejection block) is defined on a 15m candle close -- nothing new
             // to evaluate on a bar where no fresh 15m bar just folded.
-            if (!new15 || !_atr4H.IsWarm)
+            if (!new15)
                 return;
+
+            if (!_atr4H.IsWarm)
+            {
+                // Window is open and a fresh 15m bar just folded -- the ONLY reason nothing
+                // runs is that ATR(Atr4HPeriod) on the 4H series hasn't seen enough closed 4H
+                // candles yet (roughly 2-3 days of loaded history). That is a chart/history
+                // problem, not "no setup today" -- say so once so it isn't mistaken for the
+                // ordinary silent case.
+                if (!_printedAtrWarmupWarning)
+                {
+                    _printedAtrWarmupWarning = true;
+                    Print(Name + ": WARNING -- ATR(" + Atr4HPeriod + ") on the 4H series is still "
+                        + "warming up (" + _atr4H.BarsFed + "/" + Atr4HPeriod + " 4H bars fed). No "
+                        + "detection runs until it is warm -- load more history if this persists.");
+                }
+                return;
+            }
 
             MtDir dir;
             double entryPrice;
@@ -344,15 +371,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             dir = MtDir.None;
             entryPrice = 0.0;
             if (_bars15M.Count == 0)
-                return false;
+                return false;   // Only reachable before the very first 15m bar folds; new15
+                                 // gates every real call here, so there is nothing to diagnose yet.
 
             double price = Close[0];
             // The array SELECTION (priority + tie-break) is pure and tested --
             // MtDetect.FindQualifiedHtfCandidates's own comment explains the ordering.
+            MtGateDiag diag;
             List<MtArray> candidates = MtDetect.FindQualifiedHtfCandidates(
-                _bars4H, price, TickSize, FreshBars4H, _atr4H.Value, ProximityAtrMult, MinWickTicks, WickRatioMax);
+                _bars4H, price, TickSize, FreshBars4H, _atr4H.Value, ProximityAtrMult, MinWickTicks, WickRatioMax, out diag);
             if (candidates.Count == 0)
+            {
+                PrintGateDiag(diag);
                 return false;
+            }
 
             MtArray htf = candidates[0];   // the chosen array -- most recent qualifying, per its own priority
 
@@ -381,14 +413,69 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Gate 2 (design.md 4.2), all three conditions -- touch, close-outside-in-the-
             // rejection-direction, and wick geometry -- live in one pure, tested function.
             MtArray block15;
-            if (!MtDetect.TryRejectionOffLevel(bar15, idx15, htf, TickSize, MinWickTicks, WickRatioMax, out block15))
+            if (!MtDetect.TryRejectionOffLevel(bar15, idx15, htf, TickSize, MinWickTicks, WickRatioMax, out block15, out diag))
+            {
+                PrintGateDiag(diag);
                 return false;
+            }
 
             // block15.Level IS the entry price: MtDetect.TryRejectionBlock already computes the
             // 50%-of-the-wick midpoint (design.md 4.4) as its Level field.
             dir = block15.Dir;
             entryPrice = block15.Level;
             return true;
+        }
+
+        // One line per evaluation naming the reason and the number behind it (design.md's own
+        // request: a day with no trade should be a data point, not silence). Which threshold to
+        // print beside diag.Actual is a plain lookup -- every one of these is already a shell
+        // property or a value it just computed, never a re-derivation of what MeanTickCore.cs
+        // decided. Default ON: this strategy is Sim/Replay-only right now and diagnosing it is
+        // the current job; at most 6 lines/day since this only runs on a fresh-15m evaluation.
+        private void PrintGateDiag(MtGateDiag diag)
+        {
+            if (!VerboseGateDiagnostics) return;
+
+            string why;
+            switch (diag.Reason)
+            {
+                case MtRejectReason.No4HArray:
+                    why = "no 4H PD array (rejection block/FVG/order block) found anywhere in the loaded 4H history.";
+                    break;
+                case MtRejectReason.NoFreshArray:
+                    why = "4H array(s) found but none fresh -- nearest is " + diag.Actual.ToString("0")
+                        + " bars old, max FreshBars4H=" + FreshBars4H + ".";
+                    break;
+                case MtRejectReason.NoProximateArray:
+                    why = "fresh 4H array(s) found but none within proximity -- nearest is "
+                        + diag.Actual.ToString("0.00") + " points from price, max "
+                        + (ProximityAtrMult * _atr4H.Value).ToString("0.00") + " ("
+                        + ProximityAtrMult.ToString("0.00") + "x ATR=" + _atr4H.Value.ToString("0.00") + ").";
+                    break;
+                case MtRejectReason.No15mTouch:
+                    why = "15m candle never touched the chosen 4H level -- missed by "
+                        + diag.Actual.ToString("0.00") + " points.";
+                    break;
+                case MtRejectReason.CloseWrongSide:
+                    why = "15m candle touched the level but closed back through it -- short by "
+                        + diag.Actual.ToString("0.00") + " points.";
+                    break;
+                case MtRejectReason.NoRejectionShape:
+                    why = "15m candle closed outside the level but its own body is the wrong color for a rejection.";
+                    break;
+                case MtRejectReason.WickTooShort:
+                    why = "15m rejection wick too short -- " + diag.Actual.ToString("0.0")
+                        + " ticks, min MinWickTicks=" + MinWickTicks + ".";
+                    break;
+                case MtRejectReason.WickTwoSided:
+                    why = "15m wick two-sided -- ratio " + diag.Actual.ToString("0.00")
+                        + " > WickRatioMax=" + WickRatioMax.ToString("0.00") + " max.";
+                    break;
+                default:
+                    why = "unrecognized reason " + diag.Reason + " (Actual=" + diag.Actual.ToString("0.00") + ").";
+                    break;
+            }
+            Print(Name + ": no setup -- " + why);
         }
 
         #endregion
@@ -647,6 +734,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Cluster skip (A1)", Description = "Skip the trade if the next same-direction PD array sits within StopPoints of the chosen level. Default OFF -- spec 4.6/validation.md (median gap measured at 8.75x the stop).", GroupName = "01. Entry", Order = 3)]
         public bool UseClusterSkip { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Verbose gate diagnostics", Description = "Print one line per evaluation naming which gate rejected a setup and the number behind it. Default ON -- at most 6 lines/day (one fresh 15m bar can fold at most 6 times inside the 09:30-11:00 ET window), and this strategy is Sim/Replay-only.", GroupName = "01. Entry", Order = 4)]
+        public bool VerboseGateDiagnostics { get; set; }
 
         [NinjaScriptProperty, Range(1, 50)]
         [Display(Name = "Fresh bars (4H)", Description = "A 4H PD array must have formed within this many closed 4H candles -- spec 4.1.", GroupName = "02. Detection", Order = 0)]

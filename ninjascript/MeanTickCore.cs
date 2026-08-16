@@ -28,6 +28,38 @@ namespace MeanTickCore
         public bool        Valid;
     }
 
+    // Every way a day's evaluation can come out, computed HERE (the pure layer) so the
+    // shell has only to format one Print line, not re-derive WHY. Silence used to be the
+    // common case (measured: 76.5% of 238 sessions have zero qualifying candidates) and
+    // looked identical whether the strategy was working correctly or misconfigured -- this
+    // enum is what makes those two cases distinguishable in the Output window.
+    public enum MtRejectReason
+    {
+        Accepted,           // a full setup: qualified 4H array + Gate 2 15m rejection.
+        No4HArray,          // nothing shaped like a 4H PD array anywhere in the scanned window.
+        NoFreshArray,       // 4H array(s) found, but every one is older than FreshBars4H.
+        NoProximateArray,   // a fresh 4H array exists, but none sits within ProximityAtrMult*ATR.
+        No15mTouch,         // the 15m candle's range never reached the chosen 4H level.
+        CloseWrongSide,     // it touched, but closed back through the level instead of past it.
+        NoRejectionShape,   // it closed on the right side but the candle body itself is the
+                            // wrong color for a rejection (e.g. closed above the level yet
+                            // still closed below its own open) -- TryRejectionBlock's own
+                            // "must close bearish/bullish" guard, reachable independently of
+                            // condition 2 above (see TryRejectionOffLevel's Long counter-example).
+        WickTooShort,       // the rejection wick itself is shorter than MinWickTicks.
+        WickTwoSided,       // opposite-side wick / rejection wick exceeds WickRatioMax.
+    }
+
+    // One reason plus the one number that explains it -- distance from a threshold, bars of
+    // staleness, a ratio, whatever is relevant to `Reason`. Which threshold to print beside
+    // `Actual` is a lookup the shell already owns (MinWickTicks, WickRatioMax, FreshBars4H,
+    // ProximityAtrMult are its own properties), so this struct does not duplicate them.
+    public struct MtGateDiag
+    {
+        public MtRejectReason Reason;
+        public double         Actual;
+    }
+
     public static class MtDetect
     {
         // The model in one function. `expected` is the direction the trade would take,
@@ -37,7 +69,18 @@ namespace MeanTickCore
                                              double tickSize, int minWickTicks,
                                              double wickRatioMax, out MtArray array)
         {
+            MtGateDiag diag;
+            return TryRejectionBlock(bar, barIndex, expected, tickSize, minWickTicks, wickRatioMax, out array, out diag);
+        }
+
+        // Same rule, plus WHY when it fails -- diag.Reason names the gate, diag.Actual is the
+        // measured number behind it (ticks for a short wick, the ratio for a two-sided one).
+        public static bool TryRejectionBlock(MtBar bar, int barIndex, MtDir expected,
+                                             double tickSize, int minWickTicks,
+                                             double wickRatioMax, out MtArray array, out MtGateDiag diag)
+        {
             array = new MtArray();
+            diag  = new MtGateDiag { Reason = MtRejectReason.NoRejectionShape };
 
             double bodyTop = Math.Max(bar.Open, bar.Close);
             double bodyBot = Math.Min(bar.Open, bar.Close);
@@ -46,28 +89,39 @@ namespace MeanTickCore
 
             if (expected == MtDir.Short)
             {
-                if (bar.Close >= bar.Open) return false;   // must close bearish
+                if (bar.Close >= bar.Open) return false;   // must close bearish -- diag stays NoRejectionShape
                 reject   = bar.High - bodyTop;
                 opposite = bodyBot - bar.Low;
                 level    = bodyTop + reject * 0.5;
             }
             else if (expected == MtDir.Long)
             {
-                if (bar.Close <= bar.Open) return false;   // must close bullish
+                if (bar.Close <= bar.Open) return false;   // must close bullish -- diag stays NoRejectionShape
                 reject   = bodyBot - bar.Low;
                 opposite = bar.High - bodyTop;
                 level    = bodyBot - reject * 0.5;
             }
             else
             {
+                return false;   // MtDir.None -- not a real gate outcome, diag stays NoRejectionShape
+            }
+
+            // Guard the degenerate case explicitly rather than letting 0/0 produce NaN: a NaN
+            // ratio makes the comparison below false and the gate would fail OPEN. Both this
+            // and the MinWickTicks check below report as WickTooShort -- reject<=0 only ever
+            // triggers when reject is also under minWickTicks*tickSize, so it is the same gate.
+            if (reject < minWickTicks * tickSize || reject <= 0.0)
+            {
+                diag = new MtGateDiag { Reason = MtRejectReason.WickTooShort, Actual = reject / tickSize };
                 return false;
             }
 
-            if (reject < minWickTicks * tickSize) return false;
-            // Guard the degenerate case explicitly rather than letting 0/0 produce NaN:
-            // a NaN ratio makes the comparison below false and the gate would fail OPEN.
-            if (reject <= 0.0) return false;
-            if (opposite / reject > wickRatioMax) return false;
+            double ratio = opposite / reject;
+            if (ratio > wickRatioMax)
+            {
+                diag = new MtGateDiag { Reason = MtRejectReason.WickTwoSided, Actual = ratio };
+                return false;
+            }
 
             array.Kind     = MtArrayKind.RejectionBlock;
             array.Dir      = expected;
@@ -77,6 +131,7 @@ namespace MeanTickCore
             array.BarIndex = barIndex;
             array.Time     = bar.Time;
             array.Valid    = true;
+            diag = new MtGateDiag { Reason = MtRejectReason.Accepted, Actual = ratio };
             return true;
         }
 
@@ -178,76 +233,159 @@ namespace MeanTickCore
                                                  double tickSize, int minWickTicks,
                                                  double wickRatioMax, out MtArray block)
         {
+            MtGateDiag diag;
+            return TryRejectionOffLevel(bar15, barIndex15, htf, tickSize, minWickTicks, wickRatioMax, out block, out diag);
+        }
+
+        // Same three conditions, plus WHY when it fails. diag.Actual is a distance in points
+        // for conditions 1-2 (how far the level sat outside the candle, how far short the
+        // close fell) and comes straight from TryRejectionBlock's own diag for condition 3.
+        public static bool TryRejectionOffLevel(MtBar bar15, int barIndex15, MtArray htf,
+                                                 double tickSize, int minWickTicks,
+                                                 double wickRatioMax, out MtArray block, out MtGateDiag diag)
+        {
             block = new MtArray();
+            // Unreachable from the shell today -- TryDetect only ever calls this with
+            // candidates[0] out of FindQualifiedHtfCandidates, which is always Valid with a
+            // real Dir. No dedicated reason for it: adding a member for a branch no caller can
+            // hit would be exactly the kind of diagnostic nobody could ever see fire.
+            diag = new MtGateDiag { Reason = MtRejectReason.No4HArray };
             if (!htf.Valid || htf.Dir == MtDir.None) return false;
 
             // Condition 1: the candle's range touches the 4H level.
-            if (bar15.High < htf.Level || bar15.Low > htf.Level) return false;
+            if (bar15.High < htf.Level || bar15.Low > htf.Level)
+            {
+                double miss = bar15.High < htf.Level ? htf.Level - bar15.High : bar15.Low - htf.Level;
+                diag = new MtGateDiag { Reason = MtRejectReason.No15mTouch, Actual = miss };
+                return false;
+            }
 
             // Condition 2: closes OUTSIDE the level, in the rejection direction. Long means
             // "rejected upward" so the close must end up ABOVE the level; Short the mirror.
             int sign = htf.Dir == MtDir.Long ? 1 : -1;
-            if (sign * (bar15.Close - htf.Level) <= 0) return false;
+            if (sign * (bar15.Close - htf.Level) <= 0)
+            {
+                double shortfall = sign > 0 ? htf.Level - bar15.Close : bar15.Close - htf.Level;
+                diag = new MtGateDiag { Reason = MtRejectReason.CloseWrongSide, Actual = shortfall };
+                return false;
+            }
 
             // Condition 3: a one-sided rejection wick on the correct side.
-            return TryRejectionBlock(bar15, barIndex15, htf.Dir, tickSize, minWickTicks, wickRatioMax, out block);
+            return TryRejectionBlock(bar15, barIndex15, htf.Dir, tickSize, minWickTicks, wickRatioMax, out block, out diag);
         }
 
         // Spec 4.1's array SELECTION, not just qualification -- this decides WHETHER and
         // WHICH array a day trades off, so it belongs here, pure and tested, not in the shell
-        // that cannot compile into tests/MeanTick.Tests.csproj. Scans the last freshBars closed
-        // 4H candles, newest first, for every candidate that passes IsQualifiedHtf. Per-bar
-        // type priority (rejection block, then FVG, then the order block anchored to that FVG)
-        // and the "most-recent-qualifying-bar wins" tie-break are decisions, not mechanics --
-        // spec 4.1 lists the three admitted types but never ranks them, so this function IS
-        // that ranking. candidates[0] is what a caller uses as "the" qualified array; the rest
-        // exist so a caller can also implement A1's cluster-skip (spec 4.6) without re-scanning.
+        // that cannot compile into tests/MeanTick.Tests.csproj. Scans EVERY candle in `bars`
+        // (the shell caps that list at Bars4HWindow=40, so this is at most ~38 iterations, a
+        // few times a day -- nowhere near hot-path), newest first, for every candidate that
+        // passes IsQualifiedHtf. Per-bar type priority (rejection block, then FVG, then the
+        // order block anchored to that FVG) and the "most-recent-qualifying-bar wins"
+        // tie-break are decisions, not mechanics -- spec 4.1 lists the three admitted types
+        // but never ranks them, so this function IS that ranking. candidates[0] is what a
+        // caller uses as "the" qualified array; the rest exist so a caller can also implement
+        // A1's cluster-skip (spec 4.6) without re-scanning.
         //
-        // The startIdx floor of 2 (below) means a candidate anchored at bar index 0 or 1 can
-        // never be found by this scan, even though TryRejectionBlock itself does not need the
-        // two bars before it. That is a non-issue in practice: IsQualifiedHtf's own freshness
-        // gate and this scan's currentIdx - freshBars floor agree once `bars` has at least
-        // ATR(14)'s warm-up worth of history, which every real caller already requires before
-        // calling this at all (WilderAtr.IsWarm) -- the floor only ever binds on a `bars` list
-        // shorter than that, i.e. never in live/backtest operation.
+        // The startIdx floor of 2 means a candidate anchored at bar index 0 or 1 can never be
+        // found by this scan, even though TryRejectionBlock itself does not need the two bars
+        // before it -- a non-issue per the prior comment here (ATR(14)'s own warm-up already
+        // guarantees more history than that in every real caller).
+        //
+        // The scan used to stop at `currentIdx - freshBars` instead of scanning the whole
+        // list -- a real optimization for the ACCEPT decision, since IsQualifiedHtf's own
+        // freshness check would reject anything older anyway. But it silently discarded the
+        // one piece of information a stale-vs-absent diagnostic needs: a candidate that DOES
+        // exist, just too old. Widened here so `diag` can tell "arrays found but none fresh"
+        // (NoFreshArray) apart from "nothing shaped like an array at all" (No4HArray) --
+        // `found`'s contents are byte-for-byte the same either way, since IsQualifiedHtf still
+        // gates every addition to it exactly as before.
         public static List<MtArray> FindQualifiedHtfCandidates(IList<MtBar> bars, double price,
                                                                 double tickSize, int freshBars,
                                                                 double atr, double proximityAtrMult,
                                                                 int minWickTicks, double wickRatioMax)
         {
+            MtGateDiag diag;
+            return FindQualifiedHtfCandidates(bars, price, tickSize, freshBars, atr, proximityAtrMult,
+                                              minWickTicks, wickRatioMax, out diag);
+        }
+
+        // Same scan, plus WHY nothing qualified: No4HArray (no candidate shape found at all),
+        // NoFreshArray (found some, all older than freshBars -- diag.Actual is the freshest
+        // one's age in bars), or NoProximateArray (a fresh one exists, none close enough --
+        // diag.Actual is the nearest one's distance in points). Accepted when found.Count > 0;
+        // the caller (TryDetect) only reads `diag` when the list comes back empty.
+        public static List<MtArray> FindQualifiedHtfCandidates(IList<MtBar> bars, double price,
+                                                                double tickSize, int freshBars,
+                                                                double atr, double proximityAtrMult,
+                                                                int minWickTicks, double wickRatioMax,
+                                                                out MtGateDiag diag)
+        {
             var found = new List<MtArray>();
             int n = bars == null ? 0 : bars.Count;
-            if (n == 0) return found;
+            if (n == 0)
+            {
+                diag = new MtGateDiag { Reason = MtRejectReason.No4HArray };
+                return found;
+            }
 
             int currentIdx = n - 1;
-            int startIdx = Math.Max(2, currentIdx - freshBars);
+            // Floor of 2 only -- no freshBars-based cap. See the widened-scan comment above.
+            int startIdx = 2;
+
+            bool anyRaw = false, anyFresh = false;
+            int bestBarsOld = int.MaxValue;
+            double bestDistance = double.MaxValue;
+
+            // Local, not a separate static helper: every one of its captured locals (found,
+            // anyRaw, anyFresh, bestBarsOld, bestDistance, currentIdx, price, freshBars, atr,
+            // proximityAtrMult) would otherwise need threading through as a ref/out parameter
+            // at all four call sites below.
+            void Track(MtArray candidate)
+            {
+                anyRaw = true;
+                int barsOld = currentIdx - candidate.BarIndex;
+                if (barsOld < bestBarsOld) bestBarsOld = barsOld;
+                if (barsOld > freshBars) return;
+
+                anyFresh = true;
+                double distance = Math.Abs(price - candidate.Level);
+                if (distance < bestDistance) bestDistance = distance;
+
+                if (IsQualifiedHtf(candidate, currentIdx, price, freshBars, atr, proximityAtrMult))
+                    found.Add(candidate);
+            }
 
             for (int i = currentIdx; i >= startIdx; i--)
             {
                 MtBar bar = bars[i];
 
                 MtArray rb;
-                if (TryRejectionBlock(bar, i, MtDir.Long, tickSize, minWickTicks, wickRatioMax, out rb)
-                    && IsQualifiedHtf(rb, currentIdx, price, freshBars, atr, proximityAtrMult))
-                    found.Add(rb);
-                if (TryRejectionBlock(bar, i, MtDir.Short, tickSize, minWickTicks, wickRatioMax, out rb)
-                    && IsQualifiedHtf(rb, currentIdx, price, freshBars, atr, proximityAtrMult))
-                    found.Add(rb);
+                if (TryRejectionBlock(bar, i, MtDir.Long, tickSize, minWickTicks, wickRatioMax, out rb))
+                    Track(rb);
+                if (TryRejectionBlock(bar, i, MtDir.Short, tickSize, minWickTicks, wickRatioMax, out rb))
+                    Track(rb);
 
                 if (i < 2) continue;
 
                 MtArray fvg;
                 if (!TryFvg(bars[i - 2], bars[i - 1], bar, i, 0.0, tickSize, out fvg))
                     continue;
-
-                if (IsQualifiedHtf(fvg, currentIdx, price, freshBars, atr, proximityAtrMult))
-                    found.Add(fvg);
+                Track(fvg);
 
                 MtArray ob;
-                if (TryOrderBlockFromFvg(bars, i - 2, fvg.Dir, 0, tickSize, out ob)
-                    && IsQualifiedHtf(ob, currentIdx, price, freshBars, atr, proximityAtrMult))
-                    found.Add(ob);
+                if (TryOrderBlockFromFvg(bars, i - 2, fvg.Dir, 0, tickSize, out ob))
+                    Track(ob);
             }
+
+            if (found.Count > 0)
+                diag = new MtGateDiag { Reason = MtRejectReason.Accepted };
+            else if (!anyRaw)
+                diag = new MtGateDiag { Reason = MtRejectReason.No4HArray };
+            else if (!anyFresh)
+                diag = new MtGateDiag { Reason = MtRejectReason.NoFreshArray, Actual = bestBarsOld };
+            else
+                diag = new MtGateDiag { Reason = MtRejectReason.NoProximateArray, Actual = bestDistance };
+
             return found;
         }
 

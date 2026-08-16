@@ -62,9 +62,12 @@ public static class DetectionTests
         // Body bottom = min(O,C) = 18000, lower wick = 18000-17990 = 10 -> ratio 10/20 = 0.5 > 0.33.
         {
             MtArray a;
+            MtGateDiag diag;
             bool ok = MtDetect.TryRejectionBlock(B(18010, 18030, 17990, 18000), 42, MtDir.Short,
-                                                 0.25, 8, 0.33, out a);
+                                                 0.25, 8, 0.33, out a, out diag);
             T.Check(!ok, "two-sided wick is rejected");
+            T.Check(diag.Reason == MtRejectReason.WickTwoSided, "...and the reason says WickTwoSided, not some other gate");
+            T.CheckBits(diag.Actual, 0.5, "...with the actual ratio (10/20) attached");
         }
 
         // Exactly at the ratio boundary: opposite/reject == max must PASS (<=, not <).
@@ -83,18 +86,23 @@ public static class DetectionTests
         // reject = 18011 - 18010 = 1.0 point = 4 ticks < 8.
         {
             MtArray a;
+            MtGateDiag diag;
             bool ok = MtDetect.TryRejectionBlock(B(18010, 18011, 18008, 18009), 42, MtDir.Short,
-                                                 0.25, 8, 0.33, out a);
+                                                 0.25, 8, 0.33, out a, out diag);
             T.Check(!ok, "wick shorter than MinWickTicks is rejected");
+            T.Check(diag.Reason == MtRejectReason.WickTooShort, "...and the reason says WickTooShort, not WickTwoSided");
+            T.CheckBits(diag.Actual, 4.0, "...with the actual wick length in ticks (1.0 point / 0.25)");
         }
 
         // The close must be on the rejection side. A bearish-shaped wick that closes UP
         // is not a bearish rejection block.
         {
             MtArray a;
+            MtGateDiag diag;
             bool ok = MtDetect.TryRejectionBlock(B(18000, 18030, 17999, 18010), 42, MtDir.Short,
-                                                 0.25, 8, 0.33, out a);
+                                                 0.25, 8, 0.33, out a, out diag);
             T.Check(!ok, "bearish rejection requires a bearish close");
+            T.Check(diag.Reason == MtRejectReason.NoRejectionShape, "...and the reason says NoRejectionShape -- the candle never got as far as a wick check");
         }
 
         // Mirror: a bullish-shaped wick (long lower wick, small upper) that closes DOWN
@@ -103,9 +111,11 @@ public static class DetectionTests
         // the close is on the wrong side.
         {
             MtArray a;
+            MtGateDiag diag;
             bool ok = MtDetect.TryRejectionBlock(B(18010, 18011, 17980, 18000), 42, MtDir.Long,
-                                                 0.25, 8, 0.33, out a);
+                                                 0.25, 8, 0.33, out a, out diag);
             T.Check(!ok, "bullish rejection requires a bullish close");
+            T.Check(diag.Reason == MtRejectReason.NoRejectionShape, "...same reason, mirrored direction");
         }
 
         // Every level the core emits is tick-rounded before it leaves the core.
@@ -255,9 +265,11 @@ public static class DetectionTests
             // independent of exactly where the 4H level sits inside the wick.
             var htf = new MtArray { Valid = true, Dir = MtDir.Long, Level = 17995 };
             MtArray block;
-            bool ok = MtDetect.TryRejectionOffLevel(B(18000, 18025, 17980, 18020), 42, htf, 0.25, 8, 0.33, out block);
+            MtGateDiag diag;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18000, 18025, 17980, 18020), 42, htf, 0.25, 8, 0.33, out block, out diag);
             T.Check(ok, "touches + closes outside + clean wick accepts");
             T.CheckBits(block.Level, 17990.0, "entry price is still the wick midpoint");
+            T.Check(diag.Reason == MtRejectReason.Accepted, "...and the diag says Accepted on the success path too");
         }
         {
             // Reject: the counter-example that shipped past every prior review. 4H level
@@ -265,18 +277,25 @@ public static class DetectionTests
             // touches (High >= 18000), the wick ratio passes (opposite=1, reject=30, ratio
             // 0.033), but the CLOSE (17999) never got back above the level it supposedly
             // rejected upward from -- without condition 2 this armed a Long on a candle that
-            // closed BELOW its own level.
+            // closed BELOW its own level. Shortfall = level(18000) - close(17999) = 1.
             var htf = new MtArray { Valid = true, Dir = MtDir.Long, Level = 18000 };
             MtArray block;
-            bool ok = MtDetect.TryRejectionOffLevel(B(17990, 18001, 17960, 17999), 42, htf, 0.25, 8, 0.33, out block);
+            MtGateDiag diag;
+            bool ok = MtDetect.TryRejectionOffLevel(B(17990, 18001, 17960, 17999), 42, htf, 0.25, 8, 0.33, out block, out diag);
             T.Check(!ok, "a wick that never closes back outside the level is rejected");
+            T.Check(diag.Reason == MtRejectReason.CloseWrongSide, "...and the reason says CloseWrongSide, not No15mTouch");
+            T.CheckBits(diag.Actual, 1.0, "...with how many points short it fell");
         }
         {
-            // Reject: the candle's range never reaches the level at all (condition 1).
+            // Reject: the candle's range never reaches the level at all (condition 1). Range
+            // is [18005, 18020], entirely above Level=18000 -- miss = low(18005) - level(18000) = 5.
             var htf = new MtArray { Valid = true, Dir = MtDir.Long, Level = 18000 };
             MtArray block;
-            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18020, 18005, 18015), 42, htf, 0.25, 8, 0.33, out block);
+            MtGateDiag diag;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18020, 18005, 18015), 42, htf, 0.25, 8, 0.33, out block, out diag);
             T.Check(!ok, "a candle whose range never touches the level is rejected");
+            T.Check(diag.Reason == MtRejectReason.No15mTouch, "...and the reason says No15mTouch, not CloseWrongSide");
+            T.CheckBits(diag.Actual, 5.0, "...with the miss distance (low 18005 - level 18000)");
         }
 
         // Every fixture above is Long; a hardcoded `sign = +1` inside TryRejectionOffLevel would
@@ -286,18 +305,24 @@ public static class DetectionTests
             // touches, closes below the level (17995 < 18000), clean wick (ratio 5/20=0.25).
             var htf = new MtArray { Valid = true, Dir = MtDir.Short, Level = 18000 };
             MtArray block;
-            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18030, 17990, 17995), 42, htf, 0.25, 8, 0.33, out block);
+            MtGateDiag diag;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18030, 17990, 17995), 42, htf, 0.25, 8, 0.33, out block, out diag);
             T.Check(ok, "Short: touches + closes below the level + clean wick accepts");
             T.CheckBits(block.Level, 18020.0, "Short entry is still the wick midpoint");
+            T.Check(diag.Reason == MtRejectReason.Accepted, "...Accepted on the Short success path too");
         }
         {
             // Reject, Short: the mirrored counter-example. Level 18000, O=18010 H=18040 L=17999
             // C=18001 -- touches, wick ratio passes (2/30=0.067), but the close (18001) is still
-            // ABOVE the level it supposedly rejected downward from.
+            // ABOVE the level it supposedly rejected downward from. Shortfall = close(18001) -
+            // level(18000) = 1.
             var htf = new MtArray { Valid = true, Dir = MtDir.Short, Level = 18000 };
             MtArray block;
-            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18040, 17999, 18001), 42, htf, 0.25, 8, 0.33, out block);
+            MtGateDiag diag;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18040, 17999, 18001), 42, htf, 0.25, 8, 0.33, out block, out diag);
             T.Check(!ok, "Short: a close that never drops back below the level is rejected");
+            T.Check(diag.Reason == MtRejectReason.CloseWrongSide, "...and the reason says CloseWrongSide on the Short side too");
+            T.CheckBits(diag.Actual, 1.0, "...with the Short-side shortfall (close 18001 - level 18000)");
         }
 
         T.Section("HTF candidate selection");
@@ -345,6 +370,56 @@ public static class DetectionTests
             T.Check(found[0].BarIndex == 7, "the most recent qualifying bar wins the top slot");
             T.CheckBits(found[0].Level, 18020.0, "...and it is the newer level, not the older one");
             T.Check(found[1].BarIndex == 3, "the older candidate is still found, just not first");
+        }
+
+        T.Section("HTF scan diagnostics (the diag-out overload)");
+
+        // No4HArray: every bar is an inert doji (Open==Close fails both rejection-block
+        // directions) and every range is identical (no triplet ever gaps against another),
+        // so nothing shaped like a 4H array exists anywhere in the window.
+        {
+            MtBar filler = B(18000, 18000.5, 17999.5, 18000);
+            var bars = new List<MtBar> { filler, filler, filler, filler, filler, filler, filler, filler };
+            MtGateDiag diag;
+            var found = MtDetect.FindQualifiedHtfCandidates(bars, 18000, 0.25, 5, 100.0, 1.5, 8, 0.33, out diag);
+            T.Check(found.Count == 0, "an all-doji window finds nothing");
+            T.Check(diag.Reason == MtRejectReason.No4HArray, "...and the reason says No4HArray");
+        }
+
+        // NoFreshArray: exactly one raw candidate exists (a clean Short rejection block, same
+        // shape as the rejection-block section: bodyTop=18010, reject=20, opposite=2,
+        // ratio=0.1, level=18020), anchored at index 2 -- 4 bars older than currentIdx=6, past
+        // FreshBars4H=2. Every other bar is the same inert filler as above, so this is the
+        // only raw shape found and it is stale, not merely absent -- this is exactly the case
+        // the scan used to be unable to see, back when it stopped at currentIdx-freshBars.
+        {
+            MtBar filler = B(18000, 18000.5, 17999.5, 18000);
+            var bars = new List<MtBar> {
+                filler, filler,
+                B(18010, 18030, 17998, 18000),   // index 2: Short rejection block, level 18020
+                filler, filler, filler, filler,
+            };
+            MtGateDiag diag;
+            var found = MtDetect.FindQualifiedHtfCandidates(bars, 18020, 0.25, 2, 100.0, 1.5, 8, 0.33, out diag);
+            T.Check(found.Count == 0, "a stale-only window finds nothing qualifying");
+            T.Check(diag.Reason == MtRejectReason.NoFreshArray, "...and the reason says NoFreshArray, not No4HArray");
+            T.CheckBits(diag.Actual, 4.0, "...with how many bars old the nearest one is (6 - 2)");
+        }
+
+        // NoProximateArray: the same rejection-block shape, but as the CURRENT bar (barIndex ==
+        // currentIdx, so freshness trivially passes) with price parked 980 points away --
+        // ATR=40 * 1.5 = 60 points of tolerance, nowhere close.
+        {
+            MtBar filler = B(18000, 18000.5, 17999.5, 18000);
+            var bars = new List<MtBar> {
+                filler, filler,
+                B(18010, 18030, 17998, 18000),   // index 2 (current): Short rejection block, level 18020
+            };
+            MtGateDiag diag;
+            var found = MtDetect.FindQualifiedHtfCandidates(bars, 19000, 0.25, 5, 40.0, 1.5, 8, 0.33, out diag);
+            T.Check(found.Count == 0, "a fresh-but-far window finds nothing qualifying");
+            T.Check(diag.Reason == MtRejectReason.NoProximateArray, "...and the reason says NoProximateArray, not NoFreshArray");
+            T.CheckBits(diag.Actual, 980.0, "...with the nearest one's actual distance (|19000-18020|)");
         }
 
         T.Section("rung-3 structural candidates");
