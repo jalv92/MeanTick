@@ -154,6 +154,15 @@ Two qualifiers, both from V1 [0:56–1:24]:
   invention. It is **pre-registered and not swept in the first pass** — sweeping an undefined
   constant is how the 2026-08 funnel produced fourteen corpses.
 
+  **Calibration observation (Phase 0a round 3, 2026-08-04 Playback log).** Measured 4H ATR = 187.17
+  points, so `1.5 × ATR` = a 280.76-point admission window — roughly 28× the 10-point stop. The log
+  shows Gate 1 admitting arrays 330 and 403 points from price, both inside that window; Gate 2 then
+  rejected them because the 15m candle never touched the level (misses of 26.00, 34.50, 43.75, 69.50
+  and 85.25 points). **Gate 1's proximity check is close to a no-op in practice on this tape; Gate 2's
+  touch requirement is doing the actual filtering.** This is a calibration observation, not a defect,
+  and does not change the constant — sweeping/adjusting a pre-registered value on first sight of live
+  data is exactly the fitting the pre-registration exists to prevent.
+
 If no qualifying array exists at 09:30, wait for the 10:00 ET 4H candle open, which frequently creates
 one, and re-evaluate. If still none, the day is a no-trade.
 
