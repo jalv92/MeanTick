@@ -85,10 +85,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool   _cutoffFlattening;   // set BEFORE the runner-cutoff Exit* call -- suppresses
                                              // the bracket-death guard for the sibling-rung cancels
                                              // that flatten cascades into (see CheckRunnerCutoff)
-        private MtDir  _dir = MtDir.None;
         private double _entryPrice;
         private int    _placedEtSec;
-        private MtExitPlan _plan;
+        private bool   _planCounted;   // has THIS plan already incremented _tradesToday? set
+                                        // false on arm, true on the plan's first entry fill --
+                                        // without it, a K-rung Ladder fill increments once per
+                                        // RUNG, so one Ladder setup could consume up to K of the
+                                        // day's budget while a SingleTarget setup consumes 1
 
         // "Armed" is derived, not tracked: _restingOrders.Count > 0 means unfilled entry
         // limits are still working. A separate bool invites exactly the kind of stale-flag
@@ -261,6 +264,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ever shows a repeat fire before the position clears.
         private void CheckRunnerCutoff(int etSec)
         {
+            // I2: design.md:270 scopes the cutoff to the RUNNER, and design.md:544 puts any
+            // time-based exit out of v1 scope. SingleTarget is the control arm every ladder
+            // number is reported against -- giving it a time exit the ladder's own
+            // justification does not require would bias that comparison.
+            if (ExitMode != MtExitMode.Ladder) return;
             if (Position.MarketPosition == MarketPosition.Flat) return;
             if (etSec < HhmmToEtSec(RunnerCutoffEt)) return;
 
@@ -443,10 +451,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         // second, divergent calculation here (MtMath.RoundToTick already ran inside it).
         private void SubmitPlan(MtDir dir, double entryPrice, MtExitPlan plan)
         {
-            _dir = dir;
             _entryPrice = entryPrice;
             _placedEtSec = EtSecondsOfDay(Time[0]);
-            _plan = plan;
+            _planCounted = false;   // I1: this plan has not yet counted toward _tradesToday
 
             _liveRungSignals.Clear();
             for (int i = 0; i < plan.Rungs.Count; i++)
@@ -524,10 +531,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (o.OrderState != OrderState.PartFilled)
                         _restingOrders.Remove(n);
 
-                    if (_tradesToday < MaxTradesPerDay)
+                    // I1: count once per PLAN, not once per rung -- a K-rung Ladder fill would
+                    // otherwise consume up to K of the day's budget from a single setup, while
+                    // a SingleTarget setup consumes 1. ExitMode is the swept parameter, so both
+                    // arms need the same effective daily trade count to be comparable.
+                    if (!_planCounted && _tradesToday < MaxTradesPerDay)
                     {
+                        _planCounted = true;
                         _tradesToday++;
-                        Print(Name + ": fill " + _tradesToday + "/" + MaxTradesPerDay + " today ("
+                        Print(Name + ": setup " + _tradesToday + "/" + MaxTradesPerDay + " today (first fill "
                             + n + ") @ " + price.ToString("0.00") + ".");
                     }
                 }
@@ -551,7 +563,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (Position.MarketPosition == MarketPosition.Flat)
             {
-                _dir = MtDir.None;
                 _liveRungSignals.Clear();
                 _cutoffFlattening = false;
             }
