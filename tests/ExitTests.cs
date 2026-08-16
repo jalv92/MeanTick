@@ -71,6 +71,7 @@ public static class ExitTests
             T.Check(p.Rungs[3].IsRunner, "rung 4 is flagged runner");
             for (int i = 0; i < 4; i++) T.Check(p.Rungs[i].Quantity == 1, "each rung carries 1 of 4");
             T.Check(p.TotalQuantity == 4, "quantities sum to contracts");
+            foreach (var r in p.Rungs) T.Check(r.Quantity >= 1, "no rung carries zero quantity");
         }
 
         // Spec 5.2 fallback: no structural level -> rung 3 becomes a fixed 4R. Without this,
@@ -103,6 +104,21 @@ public static class ExitTests
             T.Check(p.Rungs.Count == 3, "a too-close rung is dropped");
             T.Check(p.Rungs[2].Quantity == 2, "its quantity folds into the next rung");
             T.Check(p.TotalQuantity == 4, "total quantity is preserved by the fold");
+            foreach (var r in p.Rungs) T.Check(r.Quantity >= 1, "no rung carries zero quantity");
+        }
+
+        // Runner guard: a runner within MinRungTicks of its predecessor must still
+        // survive as its own rung -- it is the rung the whole design exists for, and
+        // "tight but present" beats "folded away". Runner at 18055.5 sits 2 ticks
+        // (0.5 points) from the structural rung at 18055, well inside the 15-tick
+        // minimum that would drop any other rung at that spacing.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         18055, 18055.5, 4, 0.25, 15);
+            T.Check(p.Rungs.Count == 4, "the tight runner is not folded away");
+            T.CheckBits(p.Rungs[3].Price, 18055.5, "the runner keeps its own price");
+            T.Check(p.Rungs[3].IsRunner, "the last rung is still flagged runner");
+            T.Check(p.TotalQuantity == 4, "no contract is lost to the near-runner fold");
         }
 
         // A structural level BEHIND the entry is nonsense and must not become a rung.
@@ -140,6 +156,7 @@ public static class ExitTests
             T.Check(p.Rungs.Count == 2, "K shrinks to the contract count");
             T.Check(p.Rungs[p.Rungs.Count - 1].IsRunner, "the last surviving rung is still the runner");
             T.Check(p.TotalQuantity == 2, "quantities still sum to contracts");
+            foreach (var r in p.Rungs) T.Check(r.Quantity >= 1, "no rung carries zero quantity");
         }
 
         // Off-grid inputs: the K=4 path must round every emitted price too, not just the
@@ -155,6 +172,21 @@ public static class ExitTests
             T.CheckBits(p.Rungs[2].Price, 18040.25, "off-grid fallback rung 3 rounds to tick");
             T.CheckBits(p.Rungs[3].Price, 18120.0,  "off-grid runner rounds to tick");
             T.Check(p.TotalQuantity == 4, "off-grid fixture still allocates all contracts");
+        }
+
+        // Round before comparing, never after. Structural 18030.1 lies 0.1 points beyond
+        // the RAW rung-2 price, but RoundToTick(18030.1) is 18030.0 -- exactly p2. Compared
+        // raw-vs-rounded this passes the "beyond p2" check and rounds down onto a duplicate
+        // of rung 2. MinRungTicks=0 disables the spacing fold on purpose, so a duplicate
+        // would surface as its own rung here instead of being masked by the default fold.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         18030.1, 18120, 4, 0.25, 0);
+            T.CheckBits(p.Rungs[2].Price, 18040.0, "rung 3 falls back to 4R instead of duplicating rung 2");
+            T.Check(p.Rungs[2].Price != p.Rungs[1].Price, "rung 3 is not a duplicate of rung 2");
+            T.Check(!p.Rungs[2].IsStructural, "the fallback rung is not flagged structural");
+            T.Check(p.Rungs.Count == 4, "no extra rung is emitted");
+            T.Check(p.TotalQuantity == 4, "quantities still sum to contracts");
         }
 
         T.Section("golden ladder CSV (three named fixtures for the Python mirror)");

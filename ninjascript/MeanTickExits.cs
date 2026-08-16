@@ -79,23 +79,36 @@ namespace MeanTickCore
             double p2 = MtMath.RoundToTick(entry + sign * stopPoints * rung2R, tickSize);
             double fallback = MtMath.RoundToTick(entry + sign * stopPoints * rung3FallbackR, tickSize);
 
+            // Round before comparing, never after: a raw candidate that lies fractionally
+            // beyond p2 but ROUNDS onto p2 (or short of it) must not be treated as "beyond".
+            // Comparing raw-vs-rounded let a level like 18030.1 pass the raw check and then
+            // round down onto p2 (18030.0), emitting a duplicate rung at an identical price.
+            double structuralRounded = MtMath.RoundToTick(structuralPrice, tickSize);
+            double runnerRounded     = MtMath.RoundToTick(runnerPrice, tickSize);
+
             // A structural level is used only when it exists AND lies beyond rung 2 in the
             // trade's direction. Anything else falls back, so a missing or nonsensical level
             // never silently shortens the ladder.
-            bool structuralOk = !double.IsNaN(structuralPrice)
-                                && sign * (structuralPrice - p2) > 0.0;
-            double p3 = structuralOk ? MtMath.RoundToTick(structuralPrice, tickSize) : fallback;
+            bool structuralOk = !double.IsNaN(structuralRounded)
+                                && sign * (structuralRounded - p2) > 0.0;
+            double p3 = structuralOk ? structuralRounded : fallback;
 
-            bool runnerOk = !double.IsNaN(runnerPrice) && sign * (runnerPrice - p3) > 0.0;
+            bool runnerOk = !double.IsNaN(runnerRounded) && sign * (runnerRounded - p3) > 0.0;
             double p4 = runnerOk
-                ? MtMath.RoundToTick(runnerPrice, tickSize)
+                ? runnerRounded
                 : MtMath.RoundToTick(p3 + sign * stopPoints * rung2R, tickSize);
 
             var prices     = new double[] { p1, p2, p3, p4 };
+            // Slot 3 here holds runnerOk, not "is rung 3 structural" -- it is only safe
+            // because index 3 is only ever consumed when last == true, where the
+            // "&& !last" below zeroes it back out.
             var structural = new bool[]   { false, false, structuralOk, runnerOk };
 
             // Allocate first, then drop: a rung that is dropped for spacing folds its
             // quantity forward so the position is always fully covered.
+            // K-shrink keeps the FRONT of the price array (the two fixed rungs), so a
+            // 1- or 2-contract trade never reaches the structural or runner target --
+            // spec-compliant, and Javier's configured size (4-8 MNQ) never hits this path.
             int k = Math.Min(4, contracts);
             var qty = new int[4];
             int baseQty = contracts / k;
