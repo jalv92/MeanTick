@@ -252,6 +252,12 @@ public static class DetectionTests
         T.Check(MtSession.Window(10 * 3600 + 59 * 60)== MtWindowState.SecondChance,"10:59 is still second chance");
         T.Check(MtSession.Window(11 * 3600)          == MtWindowState.Closed,      "11:00 closes the window");
 
+        // Window() is structurally exhaustive over every int (the branches are two
+        // one-sided comparisons with no gap between them), but that was an inference
+        // from reading the code, not a fact pinned by a test. Cover both tails.
+        T.Check(MtSession.Window(-1)     == MtWindowState.Closed, "negative seconds-of-day is closed");
+        T.Check(MtSession.Window(90000)  == MtWindowState.Closed, "seconds-of-day past 24h is closed");
+
         // London is the SOURCE's 02:00-05:00, deliberately different from VeeSnap's
         // 03:00-09:30 and Apertura4HMSS's 03:00-05:00. Spec 5.3 records the divergence
         // so a future reader does not 'harmonize' it and silently move the runner's target.
@@ -264,5 +270,33 @@ public static class DetectionTests
         T.Check(!MtSession.IsExpired(10 * 3600, 9 * 3600 + 30 * 60, 90), "30 min in, a 90 min TTL is alive");
         T.Check( MtSession.IsExpired(11 * 3600, 9 * 3600 + 30 * 60, 90), "the window close expires it regardless");
         T.Check( MtSession.IsExpired(10 * 3600 + 31 * 60, 9 * 3600, 90), "91 min after placement it is expired");
+
+        // The three asserts above are ordinary cases, but they do not pin "whichever
+        // comes first" -- they are mutually confounded. The 11:00 case in particular
+        // LOOKS like it isolates the window-close branch, but a 90-minute TTL placed
+        // at 09:30 happens to expire exactly AT 11:00 too (09:30 + 90min = 11:00), so
+        // both the window-close check and the elapsed check independently return true
+        // there. Deleting the window-close early return, or loosening its >= to a
+        // narrower comparison, would not fail any of the three asserts above. The
+        // three below isolate each branch on purpose:
+        {
+            // 1. Window-close only: elapsed (1s) is nowhere near the huge TTL limit
+            //    (999999 min), so only the window-close line can produce `true` here.
+            //    This dies if that line is removed.
+            T.Check(MtSession.IsExpired(MtSession.SessionEndSec, MtSession.SessionEndSec - 1, 999999),
+                    "window close expires an order regardless of a huge TTL");
+
+            // 2. Elapsed >= on its exact boundary, inside the open window so the
+            //    window-close branch cannot fire: elapsed is exactly ttl*60 (60s = 1min).
+            //    This dies if >= becomes >.
+            T.Check(MtSession.IsExpired(9 * 3600 + 31 * 60, 9 * 3600 + 30 * 60, 1),
+                    "elapsed exactly equal to the TTL is expired (boundary is inclusive)");
+
+            // 3. The other side of that boundary: one second short of the TTL.
+            T.Check(!MtSession.IsExpired(9 * 3600 + 31 * 60 - 1, 9 * 3600 + 30 * 60, 1),
+                    "one second short of the TTL is still alive");
+        }
     }
+
+    private const int SessionEndSecTest = 11 * 3600;
 }
