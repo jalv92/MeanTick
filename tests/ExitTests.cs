@@ -15,11 +15,12 @@ public static class ExitTests
             T.Check(p.Valid, "plan is valid");
             T.CheckBits(p.StopPrice, 17990.0, "stop is entry minus StopPoints");
             T.Check(p.Rungs.Count == 1, "the control arm has exactly one rung");
-            T.Check(p.Rungs[0].Index == 1, "the single rung is 1-based index 1");
-            T.CheckBits(p.Rungs[0].Price, 18040.0, "4R above entry");
-            T.Check(p.Rungs[0].Quantity == 4, "the single rung carries the whole position");
-            T.Check(!p.Rungs[0].IsRunner, "the control arm has no runner");
-            T.Check(!p.Rungs[0].IsStructural, "the control arm's rung is not structural");
+            var r1 = T.Rung(p, 0);
+            T.Check(r1.Index == 1, "the single rung is 1-based index 1");
+            T.CheckBits(r1.Price, 18040.0, "4R above entry");
+            T.Check(r1.Quantity == 4, "the single rung carries the whole position");
+            T.Check(!r1.IsRunner, "the control arm has no runner");
+            T.Check(!r1.IsStructural, "the control arm's rung is not structural");
             T.Check(p.TotalQuantity == 4, "total quantity equals contracts");
         }
 
@@ -28,7 +29,7 @@ public static class ExitTests
         {
             var p = MtLadder.BuildSingleTarget(MtDir.Short, 18000, 10.0, 4.0, 4, 0.25);
             T.CheckBits(p.StopPrice, 18010.0, "short stop is entry plus StopPoints");
-            T.CheckBits(p.Rungs[0].Price, 17960.0, "short target is 4R below entry");
+            T.CheckBits(T.Rung(p, 0).Price, 17960.0, "short target is 4R below entry");
         }
 
         // Degenerate inputs produce an INVALID plan, never a plan with a nonsense price.
@@ -50,7 +51,7 @@ public static class ExitTests
         // against the function under test would pass even if the function were wrong.
         {
             var p = MtLadder.BuildSingleTarget(MtDir.Long, 18000.13, 10.0, 3.3, 4, 0.25);
-            T.CheckBits(p.Rungs[0].Price, 18033.25, "target is rounded to tick");
+            T.CheckBits(T.Rung(p, 0).Price, 18033.25, "target is rounded to tick");
             T.CheckBits(p.StopPrice, 17990.25, "stop is rounded to tick too");
         }
 
@@ -63,13 +64,17 @@ public static class ExitTests
                                          18055, 18120, 4, 0.25, 15);
             T.Check(p.Valid, "plan is valid");
             T.Check(p.Rungs.Count == 4, "K=4");
-            T.CheckBits(p.Rungs[0].Price, 18010.0, "rung 1 at 1R");
-            T.CheckBits(p.Rungs[1].Price, 18030.0, "rung 2 at 3R");
-            T.CheckBits(p.Rungs[2].Price, 18055.0, "rung 3 is the structural level");
-            T.CheckBits(p.Rungs[3].Price, 18120.0, "rung 4 is the runner");
-            T.Check(p.Rungs[2].IsStructural, "rung 3 is flagged structural");
-            T.Check(p.Rungs[3].IsRunner, "rung 4 is flagged runner");
-            for (int i = 0; i < 4; i++) T.Check(p.Rungs[i].Quantity == 1, "each rung carries 1 of 4");
+            var r1 = T.Rung(p, 0); var r2 = T.Rung(p, 1); var r3 = T.Rung(p, 2); var r4 = T.Rung(p, 3);
+            T.CheckBits(r1.Price, 18010.0, "rung 1 at 1R");
+            T.CheckBits(r2.Price, 18030.0, "rung 2 at 3R");
+            T.CheckBits(r3.Price, 18055.0, "rung 3 is the structural level");
+            T.CheckBits(r4.Price, 18120.0, "rung 4 is the runner");
+            T.Check(r3.IsStructural, "rung 3 is flagged structural");
+            T.Check(r4.IsRunner, "rung 4 is flagged runner");
+            T.Check(r1.Quantity == 1, "each rung carries 1 of 4");
+            T.Check(r2.Quantity == 1, "each rung carries 1 of 4");
+            T.Check(r3.Quantity == 1, "each rung carries 1 of 4");
+            T.Check(r4.Quantity == 1, "each rung carries 1 of 4");
             T.Check(p.TotalQuantity == 4, "quantities sum to contracts");
             foreach (var r in p.Rungs) T.Check(r.Quantity >= 1, "no rung carries zero quantity");
         }
@@ -80,8 +85,9 @@ public static class ExitTests
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          double.NaN, 18120, 4, 0.25, 15);
             T.Check(p.Rungs.Count == 4, "still K=4 when the structural level is missing");
-            T.CheckBits(p.Rungs[2].Price, 18040.0, "rung 3 falls back to 4R");
-            T.Check(!p.Rungs[2].IsStructural, "the fallback rung is not flagged structural");
+            var r3 = T.Rung(p, 2);
+            T.CheckBits(r3.Price, 18040.0, "rung 3 falls back to 4R");
+            T.Check(!r3.IsStructural, "the fallback rung is not flagged structural");
         }
 
         // No runner target either -> the runner falls back to the far side of the fallback,
@@ -91,7 +97,7 @@ public static class ExitTests
                                          double.NaN, double.NaN, 4, 0.25, 15);
             T.Check(p.Rungs.Count == 4, "still K=4 with no structural and no runner target");
             T.Check(p.TotalQuantity == 4, "no contract is lost");
-            T.Check(p.Rungs[3].IsRunner, "the last rung is still the runner");
+            T.Check(T.Rung(p, 3).IsRunner, "the last rung is still the runner");
         }
 
         // MinRungTicks: a rung within 15 ticks (3.75 points) of the previous one is DROPPED
@@ -102,7 +108,7 @@ public static class ExitTests
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          18032, 18120, 4, 0.25, 15);
             T.Check(p.Rungs.Count == 3, "a too-close rung is dropped");
-            T.Check(p.Rungs[2].Quantity == 2, "its quantity folds into the next rung");
+            T.Check(T.Rung(p, 2).Quantity == 2, "its quantity folds into the next rung");
             T.Check(p.TotalQuantity == 4, "total quantity is preserved by the fold");
             foreach (var r in p.Rungs) T.Check(r.Quantity >= 1, "no rung carries zero quantity");
         }
@@ -116,8 +122,9 @@ public static class ExitTests
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          18055, 18055.5, 4, 0.25, 15);
             T.Check(p.Rungs.Count == 4, "the tight runner is not folded away");
-            T.CheckBits(p.Rungs[3].Price, 18055.5, "the runner keeps its own price");
-            T.Check(p.Rungs[3].IsRunner, "the last rung is still flagged runner");
+            var runner = T.Rung(p, 3);
+            T.CheckBits(runner.Price, 18055.5, "the runner keeps its own price");
+            T.Check(runner.IsRunner, "the last rung is still flagged runner");
             T.Check(p.TotalQuantity == 4, "no contract is lost to the near-runner fold");
         }
 
@@ -125,18 +132,18 @@ public static class ExitTests
         {
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          17950, 18120, 4, 0.25, 15);
-            T.CheckBits(p.Rungs[2].Price, 18040.0, "a structural level behind entry falls back to 4R");
+            T.CheckBits(T.Rung(p, 2).Price, 18040.0, "a structural level behind entry falls back to 4R");
         }
 
         // Short is the exact mirror.
         {
             var p = MtLadder.BuildLadder(MtDir.Short, 18000, 10.0, 1.0, 3.0, 4.0,
                                          17945, 17880, 4, 0.25, 15);
-            T.CheckBits(p.StopPrice,     18010.0, "short stop");
-            T.CheckBits(p.Rungs[0].Price, 17990.0, "short rung 1 at 1R");
-            T.CheckBits(p.Rungs[1].Price, 17970.0, "short rung 2 at 3R");
-            T.CheckBits(p.Rungs[2].Price, 17945.0, "short structural rung");
-            T.CheckBits(p.Rungs[3].Price, 17880.0, "short runner");
+            T.CheckBits(p.StopPrice, 18010.0, "short stop");
+            T.CheckBits(T.Rung(p, 0).Price, 17990.0, "short rung 1 at 1R");
+            T.CheckBits(T.Rung(p, 1).Price, 17970.0, "short rung 2 at 3R");
+            T.CheckBits(T.Rung(p, 2).Price, 17945.0, "short structural rung");
+            T.CheckBits(T.Rung(p, 3).Price, 17880.0, "short runner");
         }
 
         // Quantity remainder: 6 contracts over 4 rungs is 2/2/1/1, never 1/1/1/1 with two lost.
@@ -144,8 +151,9 @@ public static class ExitTests
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          18055, 18120, 6, 0.25, 15);
             T.Check(p.TotalQuantity == 6, "6 contracts are all allocated");
-            T.Check(p.Rungs[0].Quantity == 2 && p.Rungs[1].Quantity == 2, "the remainder goes to the near rungs");
-            T.Check(p.Rungs[2].Quantity == 1 && p.Rungs[3].Quantity == 1, "the far rungs take the base share");
+            var r1 = T.Rung(p, 0); var r2 = T.Rung(p, 1); var r3 = T.Rung(p, 2); var r4 = T.Rung(p, 3);
+            T.Check(r1.Quantity == 2 && r2.Quantity == 2, "the remainder goes to the near rungs");
+            T.Check(r3.Quantity == 1 && r4.Quantity == 1, "the far rungs take the base share");
         }
 
         // Fewer contracts than rungs: K shrinks to the contract count rather than emitting
@@ -154,7 +162,7 @@ public static class ExitTests
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          18055, 18120, 2, 0.25, 15);
             T.Check(p.Rungs.Count == 2, "K shrinks to the contract count");
-            T.Check(p.Rungs[p.Rungs.Count - 1].IsRunner, "the last surviving rung is still the runner");
+            T.Check(T.Rung(p, p.Rungs.Count - 1).IsRunner, "the last surviving rung is still the runner");
             T.Check(p.TotalQuantity == 2, "quantities still sum to contracts");
             foreach (var r in p.Rungs) T.Check(r.Quantity >= 1, "no rung carries zero quantity");
         }
@@ -166,11 +174,11 @@ public static class ExitTests
         {
             var p = MtLadder.BuildLadder(MtDir.Long, 18000.13, 10.0, 1.0, 3.0, 4.0,
                                          double.NaN, 18120.07, 4, 0.25, 15);
-            T.CheckBits(p.StopPrice,      17990.25, "off-grid stop rounds to tick");
-            T.CheckBits(p.Rungs[0].Price, 18010.25, "off-grid rung 1 rounds to tick");
-            T.CheckBits(p.Rungs[1].Price, 18030.25, "off-grid rung 2 rounds to tick");
-            T.CheckBits(p.Rungs[2].Price, 18040.25, "off-grid fallback rung 3 rounds to tick");
-            T.CheckBits(p.Rungs[3].Price, 18120.0,  "off-grid runner rounds to tick");
+            T.CheckBits(p.StopPrice, 17990.25, "off-grid stop rounds to tick");
+            T.CheckBits(T.Rung(p, 0).Price, 18010.25, "off-grid rung 1 rounds to tick");
+            T.CheckBits(T.Rung(p, 1).Price, 18030.25, "off-grid rung 2 rounds to tick");
+            T.CheckBits(T.Rung(p, 2).Price, 18040.25, "off-grid fallback rung 3 rounds to tick");
+            T.CheckBits(T.Rung(p, 3).Price, 18120.0,  "off-grid runner rounds to tick");
             T.Check(p.TotalQuantity == 4, "off-grid fixture still allocates all contracts");
         }
 
@@ -182,9 +190,11 @@ public static class ExitTests
         {
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
                                          18030.1, 18120, 4, 0.25, 0);
-            T.CheckBits(p.Rungs[2].Price, 18040.0, "rung 3 falls back to 4R instead of duplicating rung 2");
-            T.Check(p.Rungs[2].Price != p.Rungs[1].Price, "rung 3 is not a duplicate of rung 2");
-            T.Check(!p.Rungs[2].IsStructural, "the fallback rung is not flagged structural");
+            var r2 = T.Rung(p, 1);
+            var r3 = T.Rung(p, 2);
+            T.CheckBits(r3.Price, 18040.0, "rung 3 falls back to 4R instead of duplicating rung 2");
+            T.Check(r3.Price != r2.Price, "rung 3 is not a duplicate of rung 2");
+            T.Check(!r3.IsStructural, "the fallback rung is not flagged structural");
             T.Check(p.Rungs.Count == 4, "no extra rung is emitted");
             T.Check(p.TotalQuantity == 4, "quantities still sum to contracts");
         }

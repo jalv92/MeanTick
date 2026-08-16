@@ -4,6 +4,7 @@
 //
 // Run: dotnet run --project tests
 using System;
+using MeanTickCore;
 
 public static class T
 {
@@ -36,6 +37,17 @@ public static class T
     {
         Console.WriteLine();
         Console.WriteLine("== " + name);
+    }
+
+    // Safe indexed access into MtExitPlan.Rungs. A rung-count regression should
+    // fail loudly at every assert that reads a rung, not crash the whole binary on
+    // the first one -- a crash here skips everything after it in the same run,
+    // including the golden-CSV write that other gates depend on being fresh.
+    public static MtRung Rung(MtExitPlan plan, int i)
+    {
+        if (plan.Rungs != null && i >= 0 && i < plan.Rungs.Count) return plan.Rungs[i];
+        Check(false, "Rungs[" + i + "] exists (Count=" + (plan.Rungs == null ? -1 : plan.Rungs.Count) + ")");
+        return default(MtRung);
     }
 }
 
