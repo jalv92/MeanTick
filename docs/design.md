@@ -376,9 +376,10 @@ actually trades instead of waiting on a limit that never fills) exists to remove
 
 #### Proposed alternative (pending the stop-side probe)
 
-Not yet decided. §6.1's body above describes the design **as originally proposed**, and
-Phase 0a round 2 reopens whether it survives a partial close. A candidate replacement, to be
-settled by round 3's `PooledStopTest` mode (`probe/LadderProbe.cs`): one pooled,
+Not yet decided. §6.1's body above describes the design **as originally proposed** — whether
+it survives a partial close is unmeasured (stop-side is UNOBSERVED, per above), not reopened
+by any observed failure in round 2. A candidate replacement, to be settled by round 3's
+`PooledStopTest` mode (`probe/LadderProbe.cs`): one pooled,
 `""`-scoped `ExitLongStopMarket` for the whole position, plus K per-leg `ExitLongLimit`
 targets — all `Exit*` methods, no `Set*` calls. It is attractive because §5 already gives
 every rung the *same* stop price and §5.4 moves all legs to break-even together, so K
