@@ -592,6 +592,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnExecutionUpdate(Execution execution, string executionId, double price,
             int quantity, MarketPosition marketPosition, string orderId, DateTime time)
         {
+            // Position/Flat handling runs FIRST, regardless of whether this execution carries an
+            // Order -- execution.md:11: "Not all executions will have associated Order objects
+            // (e.g. ExitOnSessionClose executions or AtmStrategyCreate() executions)." The
+            // IsExitOnSessionCloseStrategy flatten is exactly that: its execution has no Order,
+            // so if this ran after the `o == null` return below, _liveRungSignals would never
+            // clear on that flatten and every later bracket cancel would false-fire the guard.
+            // Deliberate ordering -- do not "tidy" this back into one early return.
+            if (Position.MarketPosition == MarketPosition.Flat)
+            {
+                _liveRungSignals.Clear();
+                _cutoffFlattening = false;
+            }
+
             Order o = execution.Order;
             if (o == null) return;
 
@@ -635,12 +648,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
             }
-
-            if (Position.MarketPosition == MarketPosition.Flat)
-            {
-                _liveRungSignals.Clear();
-                _cutoffFlattening = false;
-            }
         }
 
         protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity,
@@ -667,8 +674,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             // OnExecutionUpdate processes the fill: "Profit target Filled -> POSITION -> Stop
             // loss Cancelled -> EXEC". Removing only in OnExecutionUpdate left the signal still
             // "live" when the guard below saw that Cancelled, so it false-positived on every
-            // normal rung close. This does not weaken the guard: it still fires for a bracket
-            // dying on a rung whose OWN exit has not filled, which remains unobserved.
+            // normal rung close. Documented, not just empirical: onorderupdate.md:20 -- "There
+            // is internal strategy logic that is triggered after OnOrderUpdate() is called but
+            // before OnExecutionUpdate()" -- OCO-sibling cancellation IS that internal logic.
+            // This does not weaken the guard: it still fires for a bracket dying on a rung whose
+            // OWN exit has not filled, which remains unobserved.
             if ((n == "Stop loss" || n == "Profit target") && orderState == OrderState.Filled)
                 _liveRungSignals.Remove(order.FromEntrySignal);
 
@@ -676,15 +686,38 @@ namespace NinjaTrader.NinjaScript.Strategies
             // adapted). Phase 0a round 3 CONFIRMED per-signal stop-side independence (design.md
             // 6.1) -- this is what converts "Javier notices on the chart, eventually" into a
             // log line at the instant something actually IS wrong. Scoped PER RUNG via
-            // `_liveRungSignals`, not Position.MarketPosition: with K independent brackets, a
-            // sibling rung's own normal OCO close (target fills -> that rung's stop
-            // auto-cancels) would otherwise false-positive on every single rung fill, since the
-            // OTHER rungs keep the aggregate position non-flat. A rung already removed from
-            // `_liveRungSignals` (its own exit already filled, above, or its entry never
-            // filled) is a benign echo, not a leak.
+            // `_liveRungSignals`: with K independent brackets, a sibling rung's own normal OCO
+            // close (target fills -> that rung's stop auto-cancels) would otherwise
+            // false-positive on every single rung fill, since the OTHER rungs keep the
+            // aggregate position non-flat. A rung already removed from `_liveRungSignals` (its
+            // own exit already filled, above, or its entry never filled) is a benign echo, not
+            // a leak.
+            //
+            // `Position.MarketPosition != Flat` is ALSO required, on top of the per-rung check:
+            // any mass-cancel that clears working brackets without an execution passing through
+            // this rung's own Filled branch above (execution.md:11's ExitOnSessionClose case,
+            // fixed in OnExecutionUpdate; StartBehavior.WaitUntilFlat's historical->realtime
+            // cleanup, documented to cancel previously-generated active orders but with no
+            // confirmed event ordering to verify against) would otherwise still find the signal
+            // "live" and false-fire. If the position is genuinely flat there is nothing left to
+            // protect, by construction, regardless of which NT8-internal path got it there --
+            // this closes the false-positive class at the root instead of chasing each
+            // individual cancel source. It cannot weaken the guard: the failure case it exists
+            // for (a bracket dying on a rung whose own exit has NOT filled) always leaves the
+            // aggregate position non-flat, so this condition is never what saves it.
+            //
+            // Known ceiling, not fixable from here: NT8 documents no discriminator on a cancel.
+            // OrderState.Cancelled is identical whether a bracket died alone or was swept by a
+            // flatten; Order.Name is fixed at "Stop loss"/"Profit target"; OnOrderUpdate's
+            // `comment` is documented only as the broker's error message (onorderupdate.md).
+            // The only documented route to a reason plus a timestamp is TraceOrders/
+            // OnOrderTrace and the NT8 trace log under Documents\NinjaTrader 8\trace\. This
+            // guard can be made to stop crying wolf on paths we know about; it cannot in
+            // general prove "swept by a flatten" apart from "died alone".
             if (!_cutoffFlattening
                 && (n == "Stop loss" || n == "Profit target")
                 && (orderState == OrderState.Cancelled || orderState == OrderState.Rejected)
+                && Position.MarketPosition != MarketPosition.Flat
                 && _liveRungSignals.Contains(order.FromEntrySignal))
             {
                 Print(Name + ": WARNING -- " + n + " (" + order.FromEntrySignal + ") " + orderState
