@@ -130,9 +130,13 @@ Admitted array types on the 240-minute series:
 
 - **4H fair value gap** — the ported 3-bar detector. Level = consequent encroachment, 50% of the gap.
 - **4H order block** — **defined through the FVG, not through a displacement threshold.** A bullish
-  order block is the last down-close candle immediately preceding the 3-candle sequence that produced
-  a bullish fair value gap; bearish is the mirror. Level = mean threshold, 50% of that candle's
-  high-low range.
+  order block is the last down-close candle at or before the 3-candle sequence that produced a
+  bullish fair value gap — found by scanning backward from (and including) the gap's own first
+  candle for the last opposite-close bar; bearish is the mirror. Level = mean threshold, 50% of that
+  candle's high-low range. "At or before," not strictly preceding: the order block candle is
+  routinely the gap's own first candle in practice (a small down candle immediately followed by the
+  impulsive up move that creates the gap), and scanning from outside the 3-candle window inward would
+  miss exactly that common case.
   This definition is deliberate. The conventional wording — "the last opposite candle before a
   displacement leg" — smuggles in a free parameter, because "displacement" has no agreed threshold and
   three different ad-hoc versions of it already exist in this tree. Anchoring the order block to the
@@ -215,6 +219,14 @@ below. It is also the reverse of a claim he makes elsewhere: a coincident level 
 a lot more confluence"* (V3 [4:22]). Both readings are testable and they are opposites, which is
 exactly why the parameter ships OFF and is measured (§9, Phase 0c) rather than assumed.
 
+**Result (Phase 0c, `docs/validation.md`):** median same-direction gap = 87.5 points among
+in-window (09:30–11:00 ET) candidates — 8.75× the 10-point stop; only 1 of 65 candidates on the
+full tape had a same-direction neighbor inside the stop. This confirms the default above rather
+than overriding it — the clustering hazard A1 guards against essentially does not occur in the
+tape measured so far. **A1 ships OFF.** The measurement is a proxy (FVG-only; order blocks and
+rejection blocks would only tighten the density, not loosen it) and is flagged for re-measurement
+once the full three-array detector exists in Python, not treated as final.
+
 ---
 
 ## 5. Exits (`MeanTickExits`)
@@ -250,9 +262,22 @@ a 15-minute order block (entry at its mean threshold), whichever is nearer in th
 open universe would always find a rung a few points away and the ladder would fit the tape rather than
 test it.
 
+**"Opposing" means positionally ahead of price, not polarity-mismatched.** The rung-3 candidate scan
+filters on where a level SITS — ahead of entry in the trade's direction — not on the array's own
+bullish/bearish `Dir` tag. A bullish FVG sitting above current price still acts as resistance for a
+long trade regardless of its own polarity label, so filtering by position is the correct reading of
+"opposing"; a filter on `Dir` would reject perfectly good magnets on a technicality.
+
 **Minimum rung spacing.** A rung within `MinRungTicks = 15` of the previous one is dropped and its
 quantity folded into the next rung. Below that spacing a rung does not clear the house's ≥$5/contract
 bar and is pure commission.
+
+**Rung 1 hit rate is a real risk, not a footnote.** Phase 0b (`docs/validation.md`) measured that
+50.0% of hypothetical 09:30–11:00 entries on this tape never reach `1.0R` — rung 1's own distance —
+before the stop, on the tape's unconditional distribution. This does not retire the ladder (Phase 0b's
+own bimodality test passed), but it is carried forward here as a live number to size expectations
+against: half of MeanTick's real entries, if they resemble this tape at all, may never fill rung 1
+either, independent of whether the ladder helps once a trade does move.
 
 ### 5.3 The runner
 
@@ -264,8 +289,12 @@ unaccounted for. Everything here is ours and is labelled as such:
   (V5 [5:09]). This deliberately diverges from both house implementations — VeeSnap uses 03:00–09:30
   (`VeeSnapStrategy.cs:79`, `:635`), Apertura4HMSS uses 03:00–05:00 (`Apertura4HMSS.cs:463`). The
   divergence is intentional and recorded here so a future reader does not "harmonize" it.
-- **Trail:** by 1-minute swing, not by ATR. A trade that resolves in two minutes never moves an ATR,
-  so an ATR trail would be inert exactly when it is needed.
+- **Trail: DEFERRED, not implemented in v1.** The plan was a 1-minute swing trail, not ATR (a trade
+  that resolves in two minutes never moves an ATR, so an ATR trail would be inert exactly when it is
+  needed) — but the shipped shell has no trail at all; the runner sits at its fixed target until
+  cutoff. `SwingDetector`/`MtSwing` were ported into `MeanTickTypes.cs` for this and are currently
+  unused scaffolding. Not needed to answer the ladder-versus-control question (§1); deferred past v1
+  rather than half-built.
 - If the runner is still open at `RunnerCutoffEt` (default 12:00 ET), it is flattened at market.
 
 ### 5.4 Break-even (parameter, default OFF)
@@ -349,10 +378,14 @@ Two limits of this evidence, stated so they aren't overclaimed:
   both remain open and must be checked before any Analyzer or live-startup result on the
   real strategy is trusted.
 
-**Task 7 is UNBLOCKED; Task 8 remains BLOCKED until the stop-side probe (round 3, below)
-passes.** `MeanTickExits.cs` is a pure rung-schedule builder — a target-side claim, and
-target-side independence is confirmed by run 1. The stop architecture lives in Task 8's
-order plumbing, which is exactly what round 2 failed to measure.
+**Task 7 is UNBLOCKED and complete. Task 8 shipped (2026-08-16) with the stop side still
+UNOBSERVED** — round 3 (below) remains the outstanding measurement. `MeanTickStrategy.cs`'s
+bracket-death guard (§6.3) is the interim mitigation: scoped per rung, it logs the instant a
+stop or target dies while that rung's position is still open, converting an unmeasured risk
+into something visible instead of silent. `MeanTickExits.cs` is a pure rung-schedule builder —
+a target-side claim, and target-side independence is confirmed by run 1. The stop
+architecture lives in Task 8's order plumbing; round 3 is still what closes the question
+round 2 failed to measure.
 
 #### Phase 0a round 2 (2026-08-16, MNQ 09-26)
 
@@ -474,6 +507,12 @@ v1 runs **4–8 MNQ on a 50K evaluation**. Two consequences the strategy must re
 Two experiments run **before** any strategy code, because both can invalidate the design rather than
 merely tune it.
 
+**Status: both have run.** This section states the protocol and the pre-registered decision rule
+only. Full results, the honest reading of each, and the verdicts live in `docs/validation.md` —
+Phase 0b passed (ladder not retired) and carried forward the 50% rung-1-miss number (§5.2); Phase 0c
+decided A1 ships OFF (§4.6). Phase 0a is documented in place in §6.1 above, since it produced
+amendments to that section's own architecture rather than a standalone verdict.
+
 **Phase 0a — the plumbing probe.** A throwaway 3-rung strategy in Market Replay, watching the Orders
 tab as rung 1 fills. Question: do the surviving legs keep their own quantity, or does NT8 resize them
 to the remaining position? Roughly half an hour of work, and §5 and §6 both hang on the answer. If the
@@ -511,7 +550,6 @@ Anything not on this list is a constant in code, not a dial.
 | Parameter | Default | Swept in pass 1? |
 |---|---|---|
 | `StopPoints` | 10 | no — but coupled to the rung table; any later sweep is a 2-D grid |
-| `SessionStartEt` / `SessionEndEt` | 09:30 / 11:00 | no |
 | `MaxTradesPerDay` | 1 | no |
 | `EntryTtlMinutes` | 90 | no |
 | `FreshBars4H` | 5 | no |
@@ -527,7 +565,12 @@ Anything not on this list is a constant in code, not a dial.
 | `RunnerCutoffEt` | 12:00 | no |
 | `UseBreakEven` | OFF | yes |
 | `UseClusterSkip` (A1) | OFF | decided by Phase 0c, not swept blind |
-| `LondonStartEt` / `LondonEndEt` | 02:00 / 05:00 | no |
+
+**Session and London boundaries are deliberately NOT in this list.** `SessionStartEt`/`SessionEndEt`
+(09:30/11:00 ET) and `LondonStartEt`/`LondonEndEt` (02:00/05:00 ET) are `const`s in `MtSession`
+(`MeanTickCore.cs`), not NT8 properties — an editable property sitting over a value the Python
+mirror also hardcodes is a silent-divergence trap (§4.5). This is a decision, not an omission from
+the closed list above.
 
 ---
 
@@ -550,4 +593,8 @@ Anything not on this list is a constant in code, not a dial.
 
 ## Amendments
 
-_(none yet — A1 in §4.6 is designed but ships OFF and is not an amendment until Phase 0c decides)_
+**A1 (§4.6, clustering skip) — decided OFF, Phase 0c (`docs/validation.md`).** Median same-direction
+gap among in-window candidates = 87.5 points, 8.75× the stop; the clustering hazard A1 guards against
+essentially does not occur in the tape measured so far. This confirms the design's own default rather
+than changing it, so there is no behavior delta to record — but the decision is now made, not pending,
+and is flagged for re-measurement once the full three-array detector exists in Python.
