@@ -39,8 +39,16 @@ echo
 echo "== nt8c check (ninjascript/*.cs against the NT8 reference set) =="
 export PATH="$HOME/.local/bin:$PATH"
 
-siblings="$(grep -hoE '\b(class|struct|enum|namespace)\s+[A-Za-z_][A-Za-z0-9_]*' ninjascript/*.cs \
-    | awk '{print $2}' | sort -u)"
+# Strip `//` comments first -- prose can otherwise smuggle a word into the list
+# (e.g. "...removes the whole class of bug" contributed `of`). And NinjaTrader must
+# NEVER be suppressed, even though `namespace NinjaTrader.NinjaScript.Strategies` in
+# the shell matches the same pattern: it is the one name `nt8c check` exists to
+# catch a real failure on (NT8's reference set resolving nothing), so a genuine
+# CS0246 on it would go silently green without this exclusion.
+siblings="$(sed 's|//.*||' ninjascript/*.cs \
+    | grep -hoE '\b(class|struct|enum|namespace)\s+[A-Za-z_][A-Za-z0-9_]*' \
+    | awk '{print $2}' | sort -u | grep -vx 'NinjaTrader')"
+echo "sibling allow-list: $(echo "$siblings" | tr '\n' ' ')"
 
 for f in ninjascript/*.cs; do
     outfile="$(mktemp)"
