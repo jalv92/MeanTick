@@ -164,6 +164,35 @@ namespace MeanTickCore
             return Math.Abs(price - array.Level) <= proximityAtrMult * atr;
         }
 
+        // Spec 4.2, Gate 2 -- the WHOLE rule, not just the wick geometry TryRejectionBlock
+        // alone checks. A 15m candle qualifies only when all three hold: (1) its range
+        // touches the 4H level, (2) it CLOSES OUTSIDE the level in the rejection direction,
+        // (3) it leaves a one-sided rejection wick on the correct side. Condition 2 was
+        // missing entirely from the shell's original Gate 2 check -- a candle can touch a
+        // level, leave a clean wick, and still close back through it. Counter-example that
+        // shipped past review: 4H level 18000 (Long), 15m O=17990 H=18001 L=17960 C=17999 --
+        // touch passes, wick ratio passes (0.067), but the close (17999) never got back
+        // ABOVE the level it supposedly rejected upward from. Folded here, not the shell, so
+        // both the touch test and the close-direction test are testable.
+        public static bool TryRejectionOffLevel(MtBar bar15, int barIndex15, MtArray htf,
+                                                 double tickSize, int minWickTicks,
+                                                 double wickRatioMax, out MtArray block)
+        {
+            block = new MtArray();
+            if (!htf.Valid || htf.Dir == MtDir.None) return false;
+
+            // Condition 1: the candle's range touches the 4H level.
+            if (bar15.High < htf.Level || bar15.Low > htf.Level) return false;
+
+            // Condition 2: closes OUTSIDE the level, in the rejection direction. Long means
+            // "rejected upward" so the close must end up ABOVE the level; Short the mirror.
+            int sign = htf.Dir == MtDir.Long ? 1 : -1;
+            if (sign * (bar15.Close - htf.Level) <= 0) return false;
+
+            // Condition 3: a one-sided rejection wick on the correct side.
+            return TryRejectionBlock(bar15, barIndex15, htf.Dir, tickSize, minWickTicks, wickRatioMax, out block);
+        }
+
         // Spec 4.1's array SELECTION, not just qualification -- this decides WHETHER and
         // WHICH array a day trades off, so it belongs here, pure and tested, not in the shell
         // that cannot compile into tests/MeanTick.Tests.csproj. Scans the last freshBars closed

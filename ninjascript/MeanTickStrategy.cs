@@ -370,12 +370,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             MtBar bar15 = _bars15M[_bars15M.Count - 1];
             int idx15 = _bars15M.Count - 1;
 
-            // Gate 2, condition 1 (design.md 4.2): the 15m candle's range must touch the level.
-            if (bar15.High < htf.Level || bar15.Low > htf.Level)
-                return false;
-
+            // Gate 2 (design.md 4.2), all three conditions -- touch, close-outside-in-the-
+            // rejection-direction, and wick geometry -- live in one pure, tested function.
             MtArray block15;
-            if (!MtDetect.TryRejectionBlock(bar15, idx15, htf.Dir, TickSize, MinWickTicks, WickRatioMax, out block15))
+            if (!MtDetect.TryRejectionOffLevel(bar15, idx15, htf, TickSize, MinWickTicks, WickRatioMax, out block15))
                 return false;
 
             // block15.Level IS the entry price: MtDetect.TryRejectionBlock already computes the

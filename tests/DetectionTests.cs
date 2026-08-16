@@ -243,6 +243,42 @@ public static class DetectionTests
             T.Check(!MtDetect.IsQualifiedHtf(a, 101, 18000, 5, 40.0, 1.5), "an invalid array never qualifies");
         }
 
+        T.Section("Gate 2 -- 15m rejection off the 4H level");
+
+        // TryRejectionOffLevel is the WHOLE Gate 2 rule (spec 4.2): touch, close-outside-in-
+        // the-rejection-direction, and wick geometry. The close-direction condition (2) was
+        // missing entirely before this section existed -- these three cases pin it.
+        {
+            // Accept: touches, closes outside (above) the level in the rejection direction,
+            // and leaves a clean one-sided wick. Same bar shape as the "bullish rejection
+            // block qualifies" fixture above; entry (block.Level) is the wick midpoint,
+            // independent of exactly where the 4H level sits inside the wick.
+            var htf = new MtArray { Valid = true, Dir = MtDir.Long, Level = 17995 };
+            MtArray block;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18000, 18025, 17980, 18020), 42, htf, 0.25, 8, 0.33, out block);
+            T.Check(ok, "touches + closes outside + clean wick accepts");
+            T.CheckBits(block.Level, 17990.0, "entry price is still the wick midpoint");
+        }
+        {
+            // Reject: the counter-example that shipped past every prior review. 4H level
+            // 18000 (Long -- rejected upward). 15m O=17990 H=18001 L=17960 C=17999: the range
+            // touches (High >= 18000), the wick ratio passes (opposite=1, reject=30, ratio
+            // 0.033), but the CLOSE (17999) never got back above the level it supposedly
+            // rejected upward from -- without condition 2 this armed a Long on a candle that
+            // closed BELOW its own level.
+            var htf = new MtArray { Valid = true, Dir = MtDir.Long, Level = 18000 };
+            MtArray block;
+            bool ok = MtDetect.TryRejectionOffLevel(B(17990, 18001, 17960, 17999), 42, htf, 0.25, 8, 0.33, out block);
+            T.Check(!ok, "a wick that never closes back outside the level is rejected");
+        }
+        {
+            // Reject: the candle's range never reaches the level at all (condition 1).
+            var htf = new MtArray { Valid = true, Dir = MtDir.Long, Level = 18000 };
+            MtArray block;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18020, 18005, 18015), 42, htf, 0.25, 8, 0.33, out block);
+            T.Check(!ok, "a candle whose range never touches the level is rejected");
+        }
+
         T.Section("HTF candidate selection");
 
         // FindQualifiedHtfCandidates moved out of the shell (was untested there, and the shell
