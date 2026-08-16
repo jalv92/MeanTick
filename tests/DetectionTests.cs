@@ -220,5 +220,27 @@ public static class DetectionTests
             var a = new MtArray { Valid = false, BarIndex = 100, Level = 18000 };
             T.Check(!MtDetect.IsQualifiedHtf(a, 101, 18000, 5, 40.0, 1.5), "an invalid array never qualifies");
         }
+
+        T.Section("session window");
+
+        T.Check(MtSession.Window(9 * 3600 + 29 * 60) == MtWindowState.Closed,      "09:29 is closed");
+        T.Check(MtSession.Window(9 * 3600 + 30 * 60) == MtWindowState.Open,        "09:30 opens the window");
+        T.Check(MtSession.Window(9 * 3600 + 59 * 60) == MtWindowState.Open,        "09:59 is still the first window");
+        T.Check(MtSession.Window(10 * 3600)          == MtWindowState.SecondChance,"10:00 is the second chance");
+        T.Check(MtSession.Window(10 * 3600 + 59 * 60)== MtWindowState.SecondChance,"10:59 is still second chance");
+        T.Check(MtSession.Window(11 * 3600)          == MtWindowState.Closed,      "11:00 closes the window");
+
+        // London is the SOURCE's 02:00-05:00, deliberately different from VeeSnap's
+        // 03:00-09:30 and Apertura4HMSS's 03:00-05:00. Spec 5.3 records the divergence
+        // so a future reader does not 'harmonize' it and silently move the runner's target.
+        T.Check(!MtSession.InLondon(1 * 3600 + 59 * 60), "01:59 is before London");
+        T.Check( MtSession.InLondon(2 * 3600),           "02:00 starts London");
+        T.Check( MtSession.InLondon(4 * 3600 + 59 * 60), "04:59 is inside London");
+        T.Check(!MtSession.InLondon(5 * 3600),           "05:00 ends London (exclusive)");
+
+        // TTL is wall-clock from placement, capped by the window close.
+        T.Check(!MtSession.IsExpired(10 * 3600, 9 * 3600 + 30 * 60, 90), "30 min in, a 90 min TTL is alive");
+        T.Check( MtSession.IsExpired(11 * 3600, 9 * 3600 + 30 * 60, 90), "the window close expires it regardless");
+        T.Check( MtSession.IsExpired(10 * 3600 + 31 * 60, 9 * 3600, 90), "91 min after placement it is expired");
     }
 }

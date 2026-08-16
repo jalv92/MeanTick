@@ -164,4 +164,39 @@ namespace MeanTickCore
             return Math.Abs(price - array.Level) <= proximityAtrMult * atr;
         }
     }
+
+    public enum MtWindowState { Closed, Open, SecondChance }
+
+    // Every boundary here is EASTERN TIME seconds-of-day, supplied by the shell.
+    // The pure layer never reads a machine clock and never guesses a timezone: MeanTick
+    // is a model of one clock instant, and a chart in another timezone would arm it at
+    // the wrong minute with no symptom except no trades or bad ones. The Python mirror
+    // uses explicit ET constants, so a naked TimeOfDay here would let the two engines
+    // diverge by an hour twice a year and the parity gate would blame the engine.
+    public static class MtSession
+    {
+        public const int SessionStartSec = 9 * 3600 + 30 * 60;
+        public const int SessionEndSec   = 11 * 3600;
+        public const int SecondChanceSec = 10 * 3600;
+        public const int LondonStartSec  = 2 * 3600;
+        public const int LondonEndSec    = 5 * 3600;
+
+        public static MtWindowState Window(int etSecondsOfDay)
+        {
+            if (etSecondsOfDay < SessionStartSec) return MtWindowState.Closed;
+            if (etSecondsOfDay >= SessionEndSec)  return MtWindowState.Closed;
+            return etSecondsOfDay >= SecondChanceSec ? MtWindowState.SecondChance : MtWindowState.Open;
+        }
+
+        public static bool InLondon(int etSecondsOfDay)
+        {
+            return etSecondsOfDay >= LondonStartSec && etSecondsOfDay < LondonEndSec;
+        }
+
+        public static bool IsExpired(int etSecondsOfDay, int placedEtSecondsOfDay, int ttlMinutes)
+        {
+            if (etSecondsOfDay >= SessionEndSec) return true;
+            return etSecondsOfDay - placedEtSecondsOfDay >= ttlMinutes * 60;
+        }
+    }
 }
