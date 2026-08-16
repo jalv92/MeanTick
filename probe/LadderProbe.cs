@@ -16,8 +16,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // test is about OCO grouping, not the stop's price.
         private const int PooledStopTicks = 40;
 
-        private bool   _armed;
-        private double _entryPrice;
+        private bool _armed;
 
         [NinjaScriptProperty]
         [Display(Name = "PooledStopTest", GroupName = "Parameters", Order = 1)]
@@ -57,16 +56,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < BarsRequiredToTrade) return;
             if (_armed || Position.MarketPosition != MarketPosition.Flat) return;
 
-            // Three legs at the SAME price, one contract each, one bracket each.
-            // Targets are deliberately close together so all three fill inside one
-            // Replay session and the Orders tab shows what happens between fills.
+            // Three legs, one contract each, one bracket each. Targets are
+            // deliberately close together so all three fill inside one Replay
+            // session and the Orders tab shows what happens between fills.
             // Stops are at DISTINCT distances (40/41/42 ticks): at one identical
             // price, three 1-lot stops render on the chart as a single marker
             // reading quantity 3, indistinguishable from one 3-lot stop — three
             // prices force three rows in the Orders tab instead.
-            double entry = Close[0];
-            _entryPrice = entry;
-
             if (!PooledStopTest)
             {
                 SetStopLoss("PR1", CalculationMode.Ticks, 40, false);
@@ -79,9 +75,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             // else: PooledStopTest mode submits its exits from OnExecutionUpdate as
             // each leg fills — no Set* calls at all in that mode (see below).
 
-            EnterLongLimit(0, true, 1, entry, "PR1");
-            EnterLongLimit(0, true, 1, entry, "PR2");
-            EnterLongLimit(0, true, 1, entry, "PR3");
+            // Market, not limit: the probe measures what happens AFTER a fill, so
+            // how the fill arrives doesn't matter, and a limit that never fills
+            // (round 2) measures nothing — MeanTick's real entries stay limit orders.
+            EnterLong(0, 1, "PR1");
+            EnterLong(0, 1, "PR2");
+            EnterLong(0, 1, "PR3");
             _armed = true;
         }
 
@@ -114,12 +113,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case "PR2": targetTicks = 40; targetSignal = "P_T2"; break;
                 default:    targetTicks = 80; targetSignal = "P_T3"; break;
             }
-            double targetPx = _entryPrice + targetTicks * TickSize;
+            double targetPx = Position.AveragePrice + targetTicks * TickSize;
             ExitLongLimit(0, true, 1, targetPx, targetSignal, name);
 
             if (Position.Quantity == 3)
             {
-                double stopPx = _entryPrice - PooledStopTicks * TickSize;
+                double stopPx = Position.AveragePrice - PooledStopTicks * TickSize;
                 ExitLongStopMarket(0, true, 3, stopPx, "P_S", "");
             }
         }
