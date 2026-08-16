@@ -58,7 +58,8 @@ public static class DetectionTests
 
         // THE filter with a stated failure rate: wicks on both sides is a doji, and the
         // source vetoes it outright (V1 [3:16], "8 out of 10 times it is going to fail").
-        // Upper wick 20, lower wick 20 -> ratio 1.0 > 0.33.
+        // Body top = max(O,C) = 18010, upper wick = 18030-18010 = 20.
+        // Body bottom = min(O,C) = 18000, lower wick = 18000-17990 = 10 -> ratio 10/20 = 0.5 > 0.33.
         {
             MtArray a;
             bool ok = MtDetect.TryRejectionBlock(B(18010, 18030, 17990, 18000), 42, MtDir.Short,
@@ -94,6 +95,17 @@ public static class DetectionTests
             bool ok = MtDetect.TryRejectionBlock(B(18000, 18030, 17999, 18010), 42, MtDir.Short,
                                                  0.25, 8, 0.33, out a);
             T.Check(!ok, "bearish rejection requires a bearish close");
+        }
+
+        // Mirror: a bullish-shaped wick (long lower wick, small upper) that closes DOWN
+        // is not a bullish rejection block. Body top = max(O,C) = 18010, upper wick = 1;
+        // body bottom = min(O,C) = 18000, lower wick = 20 -- textbook bullish shape, but
+        // the close is on the wrong side.
+        {
+            MtArray a;
+            bool ok = MtDetect.TryRejectionBlock(B(18010, 18011, 17980, 18000), 42, MtDir.Long,
+                                                 0.25, 8, 0.33, out a);
+            T.Check(!ok, "bullish rejection requires a bullish close");
         }
 
         // Every level the core emits is tick-rounded before it leaves the core.
