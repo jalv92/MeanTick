@@ -333,13 +333,14 @@ second would have closed the remaining 2), and the position would have jumped st
 Flat. It did not. PR3 stayed working for 16 minutes after PR2 closed and filled at its own
 80-tick target — the runner surviving independently of its siblings, which is the behaviour
 the whole ladder design exists for, now observed rather than assumed. Stop-side independence
-is OPEN — see Phase 0a round 2 below, which found behaviour no known `StopTargetHandling`
-value predicts. **§6.1's K-independent-entry-signals architecture is not validated by this
-run alone.**
+is **UNOBSERVED** — see Phase 0a round 2 below, which turned out to measure a manual-order
+artefact rather than the strategy. **§6.1's K-independent-entry-signals architecture remains
+unvalidated on the stop side** until a run where the strategy itself holds a stop is captured.
 
 Two limits of this evidence, stated so they aren't overclaimed:
-- **No stop was hit in *this* run.** Target-side independence is confirmed; stop-side
-  behaviour needed a second run to observe at all — see Phase 0a round 2 below.
+- **No stop was hit in *this* run, or in any run so far.** Target-side independence is
+  confirmed; the strategy's own stops have never once been observed to fill or survive a
+  sibling's close — see Phase 0a round 2 below.
 - **This was a Replay/realtime run.** NT8's documented exit-quantity resize
   (`nt8-educational/reference/historical_order_backfill_logic.md:136-141`) is scoped to
   *historical backfill*, which per `historical_order_backfill_logic.md:7` covers TWO
@@ -348,31 +349,30 @@ Two limits of this evidence, stated so they aren't overclaimed:
   both remain open and must be checked before any Analyzer or live-startup result on the
   real strategy is trusted.
 
-**Tasks 7 and 8 remain BLOCKED until the stop-side probe (round 3, below) passes.** §5.2's
-rung schedule is unaffected — it is a target-side claim, and target-side independence is
-confirmed — but §6.1's exit architecture is reopened.
+**Task 7 is UNBLOCKED; Task 8 remains BLOCKED until the stop-side probe (round 3, below)
+passes.** `MeanTickExits.cs` is a pure rung-schedule builder — a target-side claim, and
+target-side independence is confirmed by run 1. The stop architecture lives in Task 8's
+order plumbing, which is exactly what round 2 failed to measure.
 
 #### Phase 0a round 2 (2026-08-16, MNQ 09-26)
 
-A second Replay run, MNQ 09-26, exposed what read on the chart as a "3-lot stop loss" after
-the first target filled: 2 contracts held, **no stop working** for either, and both
-remaining targets resting at 1 contract each.
+A second Replay run, MNQ 09-26, exposed what read on the chart as a "3-lot stop loss"
+vanishing after a target filled. **Javier confirms the strategy never opened a trade in this
+run — every order on that chart was placed by him, by hand.** The run therefore measures
+**nothing** about the strategy's own bracket lifetime. What it does document: a hand-placed
+3-contract stop under Chart Trader's OCO grouping was cancelled when his own manually-placed
+target filled — ordinary manual-order OCO behaviour, not a platform or strategy defect.
 
-Neither documented `StopTargetHandling` value predicts this. `PerEntryExecution` should
-leave the two surviving legs' stops working at 1 contract each once the closed leg's stop is
-cancelled; `ByStrategyPosition` should amend one shared stop from 3 down to 2. Neither value
-produces *zero* working stop. NT8 documents that stop and target orders are paired via OCO
-(`setstoploss.md:16`) but never defines the grouping key, and its only cancellation
-sentence — a stop loss is "automatically canceled if the managing position is closed by
-another strategy generated exit order" (`setstoploss.md:18`) — is scoped to an undefined
-"managing position." Read plainly: **a partial close can leave the remainder unprotected,
-and that is the platform's behaviour until a probe proves otherwise.**
+**Operating rule, because this cost a session: never hand-place or drag orders against a
+running strategy's position.** The strategy does not see manual orders, and its position
+accounting fights with them. Mixing manual orders into a managed strategy's live position is
+not a supported way to observe that strategy's own behaviour.
 
-Two readings of this run remain open, and the chart cannot discriminate between them: the
-strategy's own per-signal stops vanished, or a hand-placed stop on the chart vanished. At one
-identical stop price, three 1-lot stops and one 3-lot stop render identically on the chart —
-this is the same-price rendering confound that round 3's instrumentation (distinct
-40/41/42-tick stop distances, `OnOrderUpdate` logging `Order.Oco`) exists to remove.
+The chart alone could not settle *whose* stop vanished — at one identical stop price, three
+1-lot stops and one 3-lot stop (manual or strategy-placed) render identically. This is the
+same-price rendering confound that round 3's instrumentation (distinct 40/41/42-tick stop
+distances, `OnOrderUpdate` logging `Order.Oco`, and market-order entries so the probe
+actually trades instead of waiting on a limit that never fills) exists to remove.
 
 #### Proposed alternative (pending the stop-side probe)
 
@@ -385,21 +385,24 @@ every rung the *same* stop price and §5.4 moves all legs to break-even together
 per-leg stops would be K orders all carrying one number; a single pooled stop says the same
 thing once. This replaces §6.1's design only if the probe confirms the pooled stop is not
 itself OCO-killed by a per-leg target fill — otherwise it fails for the same reason the
-per-signal stops may have failed in round 2.
+original per-signal design remains unverified: NT8 never documents OCO's grouping key, so
+any stop's survival under a partial close is unconfirmed until measured directly.
 
-Round 1 and round 2 both ran with `StopTargetHandling` set in `SetDefaults` to
-`PerEntryExecution`. That setting was likely a no-op: `stoptargethandling.md:11` documents
-`PerEntryExecution` as NT8's own default, so pinning it in code changed nothing relative to
-an unset default. Worse, `managed_approach.md:131` states the *effective* value is read from
-the Strategies-window "Stop & target submission" property, which overrides whatever
-`SetDefaults` sets — so neither round's actual runtime value is confirmed by the code at
-all. Round 3 adds a `State.DataLoaded` print of the live `StopTargetHandling` value for
-exactly this reason: it is the only way to know what actually ran.
+Round 1 (and the strategy-side portion of round 2, which never ran) used `StopTargetHandling`
+set in `SetDefaults` to `PerEntryExecution`. That setting was likely a no-op:
+`stoptargethandling.md:11` documents `PerEntryExecution` as NT8's own default, so pinning it
+in code changed nothing relative to an unset default. Worse, `managed_approach.md:131` states
+the *effective* value is read from the Strategies-window "Stop & target submission" property,
+which overrides whatever `SetDefaults` sets — so round 1's actual runtime value was never
+confirmed by the code at all. Round 3 adds a `State.DataLoaded` print of the live
+`StopTargetHandling` value for exactly this reason: it is the only way to know what actually
+ran.
 
-`probe/` is deliberately **not deleted**: round 2 opened a stop-side question round 1 never
-answered, and round 3 instruments the probe to answer it and to test the proposed
-pooled-stop alternative above. It stays in the tree until both the stop-side and Analyzer
-questions are closed.
+`probe/` is deliberately **not deleted**: the stop side has never been observed — round 1
+never hit a stop and round 2 measured a manual-order artefact instead of the strategy — and
+round 3 instruments the probe (market entries, distinct stop distances, `Order.Oco` logging,
+the pooled-stop alternative) to make that observation for the first time. It stays in the
+tree until both the stop-side and Analyzer questions are closed.
 
 ### 6.2 Data series
 
@@ -414,9 +417,8 @@ anti-lookahead fold from `VeeSnapStrategy.cs:698-715` verbatim. All orders go to
   documented in `.claude/memory/nt8-order-event-race.md`.
 - Never submit orders from the `OnMarketData` thread.
 - A cancel-replace of one leg kills its OCO partner. Whether per-signal brackets actually contain
-  that to a single leg is **withdrawn as a claim** — Phase 0a round 2 (§6.1) found a partial close
-  can leave a sibling leg's stop entirely unprotected, which is the opposite of containment.
-  Unproven; must be measured by the round 3 probe before this bullet can say more than that.
+  that to a single leg is **unverified** — it has never been tested; Phase 0a round 2 (§6.1)
+  attempted to but measured a manual-order artefact instead of the strategy. Round 3 is the test.
 
 ---
 
