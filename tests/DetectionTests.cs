@@ -279,6 +279,27 @@ public static class DetectionTests
             T.Check(!ok, "a candle whose range never touches the level is rejected");
         }
 
+        // Every fixture above is Long; a hardcoded `sign = +1` inside TryRejectionOffLevel would
+        // leave those all green while breaking Short outright. Mirror both cases.
+        {
+            // Accept, Short: level 18000 (rejected downward). O=18010 H=18030 L=17990 C=17995 --
+            // touches, closes below the level (17995 < 18000), clean wick (ratio 5/20=0.25).
+            var htf = new MtArray { Valid = true, Dir = MtDir.Short, Level = 18000 };
+            MtArray block;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18030, 17990, 17995), 42, htf, 0.25, 8, 0.33, out block);
+            T.Check(ok, "Short: touches + closes below the level + clean wick accepts");
+            T.CheckBits(block.Level, 18020.0, "Short entry is still the wick midpoint");
+        }
+        {
+            // Reject, Short: the mirrored counter-example. Level 18000, O=18010 H=18040 L=17999
+            // C=18001 -- touches, wick ratio passes (2/30=0.067), but the close (18001) is still
+            // ABOVE the level it supposedly rejected downward from.
+            var htf = new MtArray { Valid = true, Dir = MtDir.Short, Level = 18000 };
+            MtArray block;
+            bool ok = MtDetect.TryRejectionOffLevel(B(18010, 18040, 17999, 18001), 42, htf, 0.25, 8, 0.33, out block);
+            T.Check(!ok, "Short: a close that never drops back below the level is rejected");
+        }
+
         T.Section("HTF candidate selection");
 
         // FindQualifiedHtfCandidates moved out of the shell (was untested there, and the shell
