@@ -44,7 +44,7 @@ public static class Program
     public static int Main(string[] args)
     {
         DetectionTests.Run();
-        // ExitTests.Run();  // uncommented in Task 6
+        ExitTests.Run();
 
         Console.WriteLine();
         Console.WriteLine(T.Failures == 0
