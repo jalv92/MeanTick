@@ -250,6 +250,39 @@ namespace MeanTickCore
             }
             return found;
         }
+
+        // Spec 5.2's rung-3 candidate gathering, moved out of the shell for the identical
+        // reason FindQualifiedHtfCandidates was: a caller that hands over only ONE
+        // already-filtered price can accept or reject it, never fall through to the
+        // next-best level once the first candidate turns out to be short of rung 2. Returns
+        // every 15m FVG (consequent encroachment) or order-block (mean threshold) level that
+        // lies ahead of `entry` in the trade's direction, NEAREST FIRST -- MtLadder.BuildLadder
+        // walks this list and takes the first one that also clears rung 2. Filtering on price
+        // POSITION, not the array's own Dir polarity, is deliberate (design.md 5.2): a bullish
+        // FVG above price still acts as resistance for a long regardless of its own label.
+        public static List<double> FindStructuralCandidates(IList<MtBar> bars, MtDir dir, double entry, double tickSize)
+        {
+            var found = new List<double>();
+            if (bars == null) return found;
+            int sign = dir == MtDir.Long ? 1 : -1;
+
+            for (int i = bars.Count - 1; i >= 2; i--)
+            {
+                MtArray fvg;
+                if (!TryFvg(bars[i - 2], bars[i - 1], bars[i], i, 0.0, tickSize, out fvg))
+                    continue;
+
+                if (sign * (fvg.Level - entry) > 0.0) found.Add(fvg.Level);
+
+                MtArray ob;
+                if (TryOrderBlockFromFvg(bars, i - 2, fvg.Dir, 0, tickSize, out ob)
+                    && sign * (ob.Level - entry) > 0.0)
+                    found.Add(ob.Level);
+            }
+
+            found.Sort((a, b) => Math.Abs(a - entry).CompareTo(Math.Abs(b - entry)));
+            return found;
+        }
     }
 
     public enum MtWindowState { Closed, Open, SecondChance }

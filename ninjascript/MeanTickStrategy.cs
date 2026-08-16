@@ -399,45 +399,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (ExitMode == MtExitMode.Ladder)
             {
-                double structuralPrice = FindRung3StructuralPrice(dir, entryPrice);
+                // Spec 5.2's closed rung-3 universe: a 15m FVG (consequent encroachment) or its
+                // order block (mean threshold). The candidate LIST (nearest-first) is pure and
+                // tested (MtDetect.FindStructuralCandidates); BuildLadder itself picks the first
+                // one that also clears rung 2 and falls back to Rung3FallbackR if none does.
+                List<double> structuralCandidates = MtDetect.FindStructuralCandidates(_bars15M, dir, entryPrice, TickSize);
                 double runnerPrice = dir == MtDir.Long ? _londonHigh : _londonLow;
                 return MtLadder.BuildLadder(dir, entryPrice, StopPoints, RungR1, RungR2, Rung3FallbackR,
-                                             structuralPrice, runnerPrice, Contracts, TickSize, MinRungTicks);
+                                             structuralCandidates, runnerPrice, Contracts, TickSize, MinRungTicks);
             }
             return MtLadder.BuildSingleTarget(dir, entryPrice, StopPoints, SingleTargetR, Contracts, TickSize);
-        }
-
-        // Spec 5.2's closed rung-3 universe: a 15m FVG (consequent encroachment) or its order
-        // block (mean threshold), whichever is NEAREST to entry in the trade's direction --
-        // "nearest" meaning the first level price would actually reach, not the most recent.
-        // BuildLadder itself re-checks "beyond rung 2" and falls back to Rung3FallbackR when
-        // nothing here qualifies (or nothing is found -> NaN).
-        private double FindRung3StructuralPrice(MtDir dir, double entry)
-        {
-            int sign = dir == MtDir.Long ? 1 : -1;
-            double best = double.NaN;
-            double bestDist = double.MaxValue;
-
-            for (int i = _bars15M.Count - 1; i >= 2; i--)
-            {
-                MtArray fvg;
-                if (!MtDetect.TryFvg(_bars15M[i - 2], _bars15M[i - 1], _bars15M[i], i, 0.0, TickSize, out fvg))
-                    continue;
-
-                ConsiderStructural(fvg.Level, sign, entry, ref best, ref bestDist);
-
-                MtArray ob;
-                if (MtDetect.TryOrderBlockFromFvg(_bars15M, i - 2, fvg.Dir, 0, TickSize, out ob))
-                    ConsiderStructural(ob.Level, sign, entry, ref best, ref bestDist);
-            }
-            return best;
-        }
-
-        private static void ConsiderStructural(double level, int sign, double entry, ref double best, ref double bestDist)
-        {
-            if (sign * (level - entry) <= 0) return;   // not ahead of price in the trade's direction
-            double dist = Math.Abs(level - entry);
-            if (dist < bestDist) { bestDist = dist; best = level; }
         }
 
         #endregion

@@ -60,14 +60,16 @@ def round_to_tick(px, tick):
 
 
 def build_ladder(direc, entry, stop_points, rung1_r, rung2_r, rung3_fallback_r,
-                  structural_price, runner_price, contracts, tick_size, min_rung_ticks):
+                  structural_candidates, runner_price, contracts, tick_size, min_rung_ticks):
     """Port of MtLadder.BuildLadder (ninjascript/MeanTickExits.cs), same arithmetic
     in the same order -- this is what golden_ladder.csv holds to 1e-9 against.
 
     `direc` is +1 long / -1 short (PropSim's convention, not MtDir's -- this
-    module bridges into resolve(), which wants a sign). `structural_price` /
-    `runner_price` use float('nan') for "no level", matching the C# double.NaN
-    sentinel used by the golden fixtures -- not None.
+    module bridges into resolve(), which wants a sign). `structural_candidates`
+    is a list of levels, nearest-to-entry first (mirrors
+    MtDetect.FindStructuralCandidates' ordering) -- None or [] means no
+    candidate at all. `runner_price` uses float('nan') for "no level", matching
+    the C# double.NaN sentinel used by the golden fixtures.
 
     Returns a dict: valid, stop_price, total_quantity, rungs (list of dict:
     index, price, quantity, is_structural, is_runner).
@@ -83,17 +85,23 @@ def build_ladder(direc, entry, stop_points, rung1_r, rung2_r, rung3_fallback_r,
     p2 = round_to_tick(entry + sign * stop_points * rung2_r, tick_size)
     fallback = round_to_tick(entry + sign * stop_points * rung3_fallback_r, tick_size)
 
-    # Round before comparing, never after: a raw candidate that lies fractionally
-    # beyond p2 but ROUNDS onto p2 (or short of it) must not be treated as "beyond".
-    # Comparing raw-vs-rounded let a level like 18030.1 pass the raw check and then
-    # round down onto p2 (18030.0), emitting a duplicate rung at an identical price.
-    structural_rounded = round_to_tick(structural_price, tick_size)
+    # A caller that hands over only ONE already-filtered price could only ever accept
+    # or reject it -- never fall through to the next-best level once the nearest
+    # candidate turned out to be short of rung 2. Walking the list in order and taking
+    # the first that clears p2 also gives the nearest candidate to p2 itself, since
+    # every candidate beyond p2 is further from entry than p2 is, so distance-from-entry
+    # order and distance-from-p2 order agree there. Round before comparing, never after
+    # -- a raw candidate that lies fractionally beyond p2 but ROUNDS onto p2 (or short
+    # of it) must not be treated as "beyond".
+    structural_rounded = float("nan")
+    for cand_raw in (structural_candidates or []):
+        cand = round_to_tick(cand_raw, tick_size)
+        if not math.isnan(cand) and sign * (cand - p2) > 0.0:
+            structural_rounded = cand
+            break
     runner_rounded = round_to_tick(runner_price, tick_size)
 
-    # A structural level is used only when it exists AND lies beyond rung 2 in
-    # the trade's direction. Anything else falls back, so a missing or
-    # nonsensical level never silently shortens the ladder.
-    structural_ok = not math.isnan(structural_rounded) and sign * (structural_rounded - p2) > 0.0
+    structural_ok = not math.isnan(structural_rounded)
     p3 = structural_rounded if structural_ok else fallback
 
     runner_ok = not math.isnan(runner_rounded) and sign * (runner_rounded - p3) > 0.0
@@ -149,7 +157,7 @@ def _import_engine():
 
 
 def resolve_ladder(tape, entry_idx, direc, entry, stop_points, rung1_r, rung2_r,
-                    rung3_fallback_r, structural_price, runner_price, contracts,
+                    rung3_fallback_r, structural_candidates, runner_price, contracts,
                     tick_size, min_rung_ticks, costs, **resolve_kwargs):
     """Build the ladder, then call engine.resolve() once per surviving rung on
     the SAME entry_idx, and return the list of resulting Trades -- callers sum
@@ -169,7 +177,7 @@ def resolve_ladder(tape, entry_idx, direc, entry, stop_points, rung1_r, rung2_r,
     """
     engine = _import_engine()
     plan = build_ladder(direc, entry, stop_points, rung1_r, rung2_r, rung3_fallback_r,
-                         structural_price, runner_price, contracts, tick_size, min_rung_ticks)
+                         structural_candidates, runner_price, contracts, tick_size, min_rung_ticks)
     if not plan["valid"]:
         return []
 
@@ -212,7 +220,7 @@ def _demo():
     research/compare_mirror.py is the real, CSV-driven gate; this is a smoke
     test that the module imports and runs standalone.
     """
-    plan = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, 18055, 18120, 1, 0.25, 15)
+    plan = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, [18055], 18120, 1, 0.25, 15)
     assert plan["valid"]
     assert len(plan["rungs"]) == 1
     r = plan["rungs"][0]
@@ -226,10 +234,17 @@ def _demo():
     # ROUNDS onto it. Comparing raw-vs-rounded would pass the "beyond p2" check
     # and then round down onto a duplicate of rung 2 -- ninjascript/MeanTickExits.cs
     # fixed exactly this. min_rung_ticks=0 so the spacing fold can't mask it.
-    p2 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, 18030.1, 18120, 4, 0.25, 0)
+    p2 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, [18030.1], 18120, 4, 0.25, 0)
     assert abs(p2["rungs"][2]["price"] - 18040.0) < 1e-9, "rung 3 falls back to 4R, not a p2 duplicate"
     assert p2["rungs"][2]["price"] != p2["rungs"][1]["price"]
     assert not p2["rungs"][2]["is_structural"]
+
+    # Falls through past a rejected candidate to the next-best one: 18015 is nearer to
+    # entry but short of p2 (18030), so it must be skipped in favor of 18055 -- a caller
+    # that could only hand over ONE candidate could never express this.
+    p3 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, [18015, 18055], 18120, 4, 0.25, 15)
+    assert abs(p3["rungs"][2]["price"] - 18055.0) < 1e-9, "falls through to the second candidate"
+    assert p3["rungs"][2]["is_structural"]
 
     print("mean_tick.py: build_ladder self-check OK")
 
@@ -255,7 +270,7 @@ def _demo_resolve_ladder():
     costs = engine.Costs(commission=0.0, slippage_ticks=0.0, tick_size=0.25, point_value=2.0)
 
     trades = resolve_ladder(tape_, 0, 1, 18000.0, 10.0, 1.0, 3.0, 4.0,
-                             float("nan"), 18120.0, 4, 0.25, 15, costs)
+                             None, 18120.0, 4, 0.25, 15, costs)
     assert len(trades) == 4, "one Trade per surviving rung"
     assert all(t.reason == "target" for t in trades), "the synthetic path never touches the stop"
     expected_pnl = [20.0, 60.0, 80.0, 240.0]     # (target - 18000) * 2.0 $/pt * 1 contract

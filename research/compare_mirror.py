@@ -31,17 +31,17 @@ TOL = 1e-9
 FIXTURES = {
     "rung1_only": dict(
         direc=1, entry=18000.0, stop_points=10.0, rung1_r=1.0, rung2_r=3.0,
-        rung3_fallback_r=4.0, structural_price=18055.0, runner_price=18120.0,
+        rung3_fallback_r=4.0, structural_candidates=[18055.0], runner_price=18120.0,
         contracts=1, tick_size=0.25, min_rung_ticks=15,
     ),
     "all_rungs": dict(
         direc=1, entry=18000.13, stop_points=10.0, rung1_r=1.0, rung2_r=3.0,
-        rung3_fallback_r=4.0, structural_price=float("nan"), runner_price=18120.07,
+        rung3_fallback_r=4.0, structural_candidates=None, runner_price=18120.07,
         contracts=4, tick_size=0.25, min_rung_ticks=15,
     ),
     "stop_between_rungs": dict(
         direc=1, entry=18000.0, stop_points=10.0, rung1_r=1.0, rung2_r=3.0,
-        rung3_fallback_r=4.0, structural_price=18032.0, runner_price=18120.0,
+        rung3_fallback_r=4.0, structural_candidates=[18032.0], runner_price=18120.0,
         contracts=4, tick_size=0.25, min_rung_ticks=15,
     ),
 }

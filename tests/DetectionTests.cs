@@ -326,6 +326,42 @@ public static class DetectionTests
             T.Check(found[1].BarIndex == 3, "the older candidate is still found, just not first");
         }
 
+        T.Section("rung-3 structural candidates");
+
+        // Two 15m FVGs ahead of a Long entry at 18000: a nearer one at 18040 (triplet 0,1,2)
+        // and a farther one at 18100 (triplet 5,6,7). Every OTHER bar is an identical huge
+        // "WIDE" range (17000-19000) that overlaps everything, so it can never gap against a
+        // neighbor -- the only two triplets that register are the intended ones, not an
+        // accidental cross-triplet. Nearest-first ordering is what lets BuildLadder fall
+        // through past a rejected candidate to the next-best one -- the bug this move fixes.
+        {
+            MtBar wide = B(18000, 19000, 17000, 18000);
+            var bars = new List<MtBar> {
+                B(18025, 18030, 18020, 18028),   // 0: a1, High=18030
+                wide,                             // 1
+                B(18055, 18060, 18050, 18058),   // 2: c1, Low=18050 -> gap1 level (18030+18050)/2=18040
+                wide,                             // 3
+                wide,                             // 4
+                B(18085, 18090, 18080, 18088),   // 5: a2, High=18090
+                wide,                             // 6
+                B(18105, 18110, 18100, 18108),   // 7: c2, Low=18100 -> gap2 level (18090+18100)/2=18095
+            };
+            var found = MtDetect.FindStructuralCandidates(bars, MtDir.Long, 18000, 0.25);
+            T.Check(found.Count == 2, "only the two ahead-of-entry gaps qualify, no cross-triplet noise");
+            T.CheckBits(found[0], 18040.0, "nearest candidate first (consequent encroachment of the first gap)");
+            T.CheckBits(found[1], 18095.0, "farther candidate second");
+        }
+        {
+            // A gap entirely behind a Long entry is not a candidate at all.
+            var bars = new List<MtBar> {
+                B(17900, 17902, 17898, 17901),
+                B(17901, 17903, 17899, 17902),
+                B(17850, 17852, 17848, 17850),   // c: gap below entry
+            };
+            var found = MtDetect.FindStructuralCandidates(bars, MtDir.Long, 18000, 0.25);
+            T.Check(found.Count == 0, "a gap behind entry is filtered out, not just deprioritized");
+        }
+
         T.Section("session window");
 
         T.Check(MtSession.Window(9 * 3600 + 29 * 60) == MtWindowState.Closed,      "09:29 is closed");

@@ -66,7 +66,7 @@ namespace MeanTickCore
         // rate; any claim that they are 'safer' is wrong (spec 8).
         public static MtExitPlan BuildLadder(MtDir dir, double entry, double stopPoints,
                                              double rung1R, double rung2R, double rung3FallbackR,
-                                             double structuralPrice, double runnerPrice,
+                                             IList<double> structuralCandidates, double runnerPrice,
                                              int contracts, double tickSize, int minRungTicks)
         {
             var plan = new MtExitPlan { Rungs = new List<MtRung>() };
@@ -79,18 +79,31 @@ namespace MeanTickCore
             double p2 = MtMath.RoundToTick(entry + sign * stopPoints * rung2R, tickSize);
             double fallback = MtMath.RoundToTick(entry + sign * stopPoints * rung3FallbackR, tickSize);
 
-            // Round before comparing, never after: a raw candidate that lies fractionally
+            // A caller that hands over only ONE already-filtered price could only ever accept
+            // or reject it -- never fall through to the next-best level once the nearest
+            // candidate turned out to be short of rung 2. structuralCandidates is expected
+            // nearest-to-entry first (MtDetect.FindStructuralCandidates sorts it that way);
+            // walking it in order and taking the first that clears p2 also gives the nearest
+            // candidate to p2 itself, since every candidate beyond p2 is further from entry
+            // than p2 is, so distance-from-entry order and distance-from-p2 order agree there.
+            // Round before comparing, never after -- a raw candidate that lies fractionally
             // beyond p2 but ROUNDS onto p2 (or short of it) must not be treated as "beyond".
-            // Comparing raw-vs-rounded let a level like 18030.1 pass the raw check and then
-            // round down onto p2 (18030.0), emitting a duplicate rung at an identical price.
-            double structuralRounded = MtMath.RoundToTick(structuralPrice, tickSize);
-            double runnerRounded     = MtMath.RoundToTick(runnerPrice, tickSize);
+            double structuralRounded = double.NaN;
+            if (structuralCandidates != null)
+            {
+                for (int ci = 0; ci < structuralCandidates.Count; ci++)
+                {
+                    double cand = MtMath.RoundToTick(structuralCandidates[ci], tickSize);
+                    if (!double.IsNaN(cand) && sign * (cand - p2) > 0.0)
+                    {
+                        structuralRounded = cand;
+                        break;
+                    }
+                }
+            }
+            double runnerRounded = MtMath.RoundToTick(runnerPrice, tickSize);
 
-            // A structural level is used only when it exists AND lies beyond rung 2 in the
-            // trade's direction. Anything else falls back, so a missing or nonsensical level
-            // never silently shortens the ladder.
-            bool structuralOk = !double.IsNaN(structuralRounded)
-                                && sign * (structuralRounded - p2) > 0.0;
+            bool structuralOk = !double.IsNaN(structuralRounded);
             double p3 = structuralOk ? structuralRounded : fallback;
 
             bool runnerOk = !double.IsNaN(runnerRounded) && sign * (runnerRounded - p3) > 0.0;
