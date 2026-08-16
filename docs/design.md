@@ -371,20 +371,20 @@ matches only its own leg's rung — 29845.25 (+5 pts = 20 ticks, PR1), 29850.25 
 ticks, PR2), 29860.25 (+20 pts = 80 ticks, PR3) — and each target execution stepped the
 position down by exactly qty=1: 3 → 2 → 1 → 0.
 
-**Verdict: PARTIAL.** Target-side independence is CONFIRMED: had NT8 resized surviving exit
-orders to the remaining position, the first target to fill would have closed all 3 (or the
-second would have closed the remaining 2), and the position would have jumped straight to
-Flat. It did not. PR3 stayed working for 16 minutes after PR2 closed and filled at its own
-80-tick target — the runner surviving independently of its siblings, which is the behaviour
-the whole ladder design exists for, now observed rather than assumed. Stop-side independence
-is **UNOBSERVED** — see Phase 0a round 2 below, which turned out to measure a manual-order
-artefact rather than the strategy. **§6.1's K-independent-entry-signals architecture remains
-unvalidated on the stop side** until a run where the strategy itself holds a stop is captured.
+**Verdict: CONFIRMED (as of round 4, below).** Target-side independence is CONFIRMED here: had
+NT8 resized surviving exit orders to the remaining position, the first target to fill would have
+closed all 3 (or the second would have closed the remaining 2), and the position would have
+jumped straight to Flat. It did not. PR3 stayed working for 16 minutes after PR2 closed and
+filled at its own 80-tick target — the runner surviving independently of its siblings, which is
+the behaviour the whole ladder design exists for, now observed rather than assumed. Stop-side
+independence was UNOBSERVED at the time of this run (round 2 below measured a manual-order
+artefact, not the strategy) — **round 4 below closed it: per-signal `Set*` brackets DO survive a
+sibling rung's close.** §6.1's K-independent-entry-signals architecture is now validated on both
+sides.
 
-Two limits of this evidence, stated so they aren't overclaimed:
-- **No stop was hit in *this* run, or in any run so far.** Target-side independence is
-  confirmed; the strategy's own stops have never once been observed to fill or survive a
-  sibling's close — see Phase 0a round 2 below.
+Two limits of *this* run's evidence, stated so they aren't overclaimed:
+- **No stop was hit in *this* run.** Target-side independence is confirmed here; the strategy's
+  own stops were first observed filling/surviving a sibling's close in round 4, below.
 - **This was a Replay/realtime run.** NT8's documented exit-quantity resize
   (`nt8-educational/reference/historical_order_backfill_logic.md:136-141`) is scoped to
   *historical backfill*, which per `historical_order_backfill_logic.md:7` covers TWO
@@ -393,16 +393,14 @@ Two limits of this evidence, stated so they aren't overclaimed:
   both remain open and must be checked before any Analyzer or live-startup result on the
   real strategy is trusted.
 
-**Task 7 is UNBLOCKED and complete. Task 8 shipped (2026-08-16) with the stop side of its own
-shipped `Set*`-bracket architecture still UNOBSERVED** — round 3 (below) ran and measured the
-proposed pooled-stop alternative instead, confirming it survives submission and a full stop-out
-but leaving the partial-close case (a target filling before the stop) unmeasured under either
-design. `MeanTickStrategy.cs`'s bracket-death guard (§6.3) is the interim mitigation: scoped per
-rung, it logs the instant a stop or target dies while that rung's position is still open,
-converting an unmeasured risk into something visible instead of silent. `MeanTickExits.cs` is a
-pure rung-schedule builder — a target-side claim, and target-side independence is confirmed by
-run 1. The stop architecture lives in Task 8's order plumbing; the partial-close case is still
-what closes the question no round has yet measured.
+**Task 7 is UNBLOCKED and complete. Task 8 shipped (2026-08-16); its shipped `Set*`-bracket
+architecture's stop side is now CONFIRMED independent (round 4, below), with one defect found
+and fixed in the same pass** — the bracket-death guard itself raced on the same order-event
+ordering that makes the independence possible, and false-fired on every normal rung close until
+fixed (round 4). `MeanTickStrategy.cs`'s bracket-death guard (§6.3) remains the mitigation for
+the one case that is still genuinely unobserved: a bracket dying on a rung whose own exit has
+*not* filled. `MeanTickExits.cs` is a pure rung-schedule builder — a target-side claim, and
+target-side independence is confirmed by run 1.
 
 #### Phase 0a round 2 (2026-08-16, MNQ 09-26)
 
@@ -457,23 +455,72 @@ per-leg targets and the pooled stop alike.
   below, not the shipped design. **MeanTick ships per-signal `Set*` brackets** (§6.1's body
   above), and their stop-side behaviour remains unobserved after three probe runs.
 
-Net effect on the verdict: from "stop side entirely unobserved" to something more precise — the
-pooled-stop alternative is now partially validated at submission and on a full stop-out; the
-shipped `Set*` design is still unmeasured; the partial-close case is unmeasured under either.
+Net effect on the verdict, as of round 3: from "stop side entirely unobserved" to something more
+precise — the pooled-stop alternative partially validated at submission and on a full stop-out;
+the shipped `Set*` design still unmeasured; the partial-close case unmeasured under either.
+**Round 4, below, closes the shipped-design half of this.**
 
-#### Proposed alternative (pending the partial-close case)
+#### Phase 0a round 4 (2026-08-16 Playback, Ladder mode, MNQ)
 
-Not fully decided. §6.1's body above describes the shipped design — per-signal `Set*` brackets —
-whose survival under a partial close remains unmeasured (see round 3, above). A candidate
-replacement, partially validated by round 3's `PooledStopTest` mode (`probe/LadderProbe.cs`): one
-pooled, `""`-scoped `ExitLongStopMarket` for the whole position, plus K per-leg `ExitLongLimit`
-targets — all `Exit*` methods, no `Set*` calls. It is attractive because §5 already gives every
-rung the *same* stop price and §5.4 moves all legs to break-even together, so K per-leg stops
-would be K orders all carrying one number; a single pooled stop says the same thing once. Round 3
-confirmed the pooled stop coexists with per-leg targets and is not OCO-killed at submission or on
-a full stop-out — but whether it **survives and auto-reduces** when a target fills first is the
-one observation still missing, and that observation is what would actually replace §6.1's shipped
-design.
+`MeanTickStrategy.cs` itself — not the probe — run in Playback, `ExitMode = Ladder`, 4 rungs.
+Entries `MT_R1..MT_R4` all filled at 29557 → Long 4. Each received its own bracket: `Stop loss`
+at 29547 (qty 1 each) and `Profit target` at **29567 / 29587 / 29604.75 / 29754.25** — 1R, 3R, a
+real structural level, and the runner. The ladder built exactly as designed. Then, in order:
+
+```
+Profit target Filled @29567       -> POSITION q=3
+Stop loss     Cancelled                        <- ONLY that rung's stop
+EXEC px=29569.75 Short
+Profit target Filled @29587       -> POSITION q=2
+Stop loss     Cancelled                        <- ONLY that rung's stop
+EXEC px=29627.5 Short
+Profit target Filled @29604.75    -> POSITION q=1
+Stop loss     Cancelled                        <- ONLY that rung's stop
+EXEC px=29627.5 Short
+Stop loss     Working -> Filled @29547 -> POSITION q=0 Flat
+Profit target Cancel submitted -> Cancelled @29754.25   <- the runner's own target
+```
+
+**Established:**
+- **Every cancelled stop was cancelled by its own rung's target filling.** Rungs 2, 3 and 4 kept
+  working stops while rung 1 closed. That is the independence Phase 0a could never observe until
+  now. **H1 (per-signal brackets die when a sibling closes) is refuted by data.** Per-signal
+  `Set*` bracket independence is CONFIRMED on the stop side.
+- **A real defect was found and fixed in the same pass, not a platform failure.** Note the
+  ordering: `Profit target Filled` → `POSITION` → `Stop loss Cancelled` → `EXEC` — the execution
+  callback arrives *after* the OCO cancel. The shell's bracket-death guard removed a rung's
+  signal from its live-tracking set in `OnExecutionUpdate`, so when `OnOrderUpdate` saw the
+  sibling's `Cancelled` first, the signal still read "live" and the guard false-fired — exactly
+  the race its own comment predicted this round would test. Fixed by moving the removal to
+  `OnOrderUpdate`'s own `Filled` handling, ahead of the sibling `Cancelled`. The four WARNING
+  lines this run produced are the guard's own bug, not evidence of anything wrong with NT8 or
+  the bracket architecture — recorded here so a future reader does not mistake them for one.
+
+**NOT established — read this half with equal weight:**
+- **These were Playback fills, and they were optimistic.** Targets at 29587 and 29604.75 both
+  executed at 29627.5, and rung 1's 29567 executed at 29569.75 — fills better than the limit
+  price mean the bar traded through and NT8 filled at its own price. **Nothing here validates
+  fill realism**, and the P&L of this trade (+141.75 points gross on 4 MNQ) must not be quoted
+  as a result.
+
+**Net effect on the verdict.** §6.1's K-independent-entry-signals architecture (as shipped, with
+`Set*` brackets) is now validated on **both** sides — target (run 1) and stop (this run). The
+one thing genuinely still unobserved is a bracket dying on a rung whose own exit has *not*
+filled; the bracket-death guard (§6.3), now itself fixed, remains the mitigation for that case.
+
+#### Proposed alternative — settled: not adopted
+
+§6.1's shipped design (per-signal `Set*` brackets) is now confirmed independent on both sides
+(round 4, above). The candidate replacement below, partially validated by round 3's
+`PooledStopTest` mode (`probe/LadderProbe.cs`): one pooled, `""`-scoped `ExitLongStopMarket` for
+the whole position, plus K per-leg `ExitLongLimit` targets — all `Exit*` methods, no `Set*`
+calls. It was attractive because §5 already gives every rung the *same* stop price and §5.4
+moves all legs to break-even together, so K per-leg stops would be K orders all carrying one
+number; a single pooled stop says the same thing once. Round 3 confirmed the pooled stop
+coexists with per-leg targets and is not OCO-killed at submission or on a full stop-out, but
+never observed whether it survives and auto-reduces on a partial close. **With the shipped
+design now confirmed working end to end, there is no reason to switch — this stays recorded as
+a validated-but-not-adopted alternative, not reopened.**
 
 Round 1 (and the strategy-side portion of round 2, which never ran) used `StopTargetHandling`
 set in `SetDefaults` to `PerEntryExecution`. That setting was likely a no-op:
@@ -484,9 +531,13 @@ which overrides whatever `SetDefaults` sets — so round 1's actual runtime valu
 confirmed by the code at all. Round 3's `State.DataLoaded` print of the live
 `StopTargetHandling` value closed exactly this unknown (`PerEntryExecution`, confirmed above).
 
-`probe/` is deliberately **not deleted**: the partial-close case — a target filling before the
-stop, and whether either bracket style survives it — has never been observed across three
-rounds. It stays in the tree until that observation exists.
+`probe/` is deliberately **not deleted**: it tests the pooled-stop alternative specifically, not
+the shipped design. Round 4 answered the sibling-close question for the SHIPPED `Set*` brackets
+(confirmed independent) but never touched `probe/`'s `PooledStopTest` path — whether the pooled
+stop itself survives and auto-reduces on a partial close remains unobserved after four rounds.
+Since the shipped design is not being switched (above), this observation is no longer
+load-bearing for anything currently planned, but `probe/` stays in the tree rather than being
+deleted on an assumption.
 
 ### 6.2 Data series
 
@@ -500,9 +551,10 @@ anti-lookahead fold from `VeeSnapStrategy.cs:698-715` verbatim. All orders go to
 - Set in-flight flags **before** any `Enter*`/`Exit*` call, never after — the order-event race is
   documented in `.claude/memory/nt8-order-event-race.md`.
 - Never submit orders from the `OnMarketData` thread.
-- A cancel-replace of one leg kills its OCO partner. Whether per-signal brackets actually contain
-  that to a single leg is **unverified** — it has never been tested; Phase 0a round 2 (§6.1)
-  attempted to but measured a manual-order artefact instead of the strategy. Round 3 is the test.
+- A cancel-replace of one leg kills its OCO partner. Per-signal brackets DO contain that to a
+  single leg — Phase 0a round 4 (§6.1) confirmed rungs 2-4's stops stayed working while rung 1's
+  target filled and only rung 1's own stop cancelled. Round 2 attempted this measurement first
+  but caught a manual-order artefact instead of the strategy; round 4 is the real one.
 
 ---
 
