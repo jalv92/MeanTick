@@ -197,13 +197,35 @@ public static class DetectionTests
             T.Check(!ok, "no opposite-close candle means no order block");
         }
 
+        // dir == MtDir.None is an explicit guard, not a fall-through: it must return
+        // false outright rather than searching the bars for an "opposite" of nothing.
+        {
+            var bars = new List<MtBar>();
+            bars.Add(B(17980, 17990, 17970, 17985)); // 0
+            bars.Add(B(17985, 17995, 17975, 17990)); // 1
+            bars.Add(B(17990, 18000, 17985, 17995)); // 2
+            MtArray ob;
+            bool ok = MtDetect.TryOrderBlockFromFvg(bars, 1, MtDir.None, 0, 0.25, out ob);
+            T.Check(!ok, "MtDir.None is rejected outright, not searched");
+        }
+
         T.Section("HTF qualification");
 
         // Freshness: formed within the last FreshBars4H candles.
         {
             var a = new MtArray { Valid = true, BarIndex = 100, Level = 18000, Dir = MtDir.Long };
             T.Check( MtDetect.IsQualifiedHtf(a, 104, 18000, 5, 40.0, 1.5), "4 bars old is fresh at FreshBars=5");
+            T.Check( MtDetect.IsQualifiedHtf(a, 105, 18000, 5, 40.0, 1.5), "exactly FreshBars old is still fresh (boundary is inclusive)");
             T.Check(!MtDetect.IsQualifiedHtf(a, 106, 18000, 5, 40.0, 1.5), "6 bars old is stale");
+        }
+
+        // A non-positive ATR must fail closed even at zero distance -- without the guard,
+        // proximityAtrMult * 0.0 is 0.0 and |price - level| <= 0.0 would pass at price ==
+        // level. The house ATR crosses sessions and is cold at the start of a run, and
+        // MeanTick's proximity gate fires at 09:30, so this is a real state, not a hypothetical.
+        {
+            var a = new MtArray { Valid = true, BarIndex = 100, Level = 18000, Dir = MtDir.Long };
+            T.Check(!MtDetect.IsQualifiedHtf(a, 101, 18000, 5, 0.0, 1.5), "zero ATR never qualifies, even at zero distance");
         }
 
         // Proximity: |price - level| <= ProximityAtrMult * ATR(14) on the 4H series.
