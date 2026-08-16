@@ -3,10 +3,13 @@
 #
 # `nt8c check <file>` compiles ONE file in isolation. MeanTickCore.cs uses MtBar /
 # MtMath / MtSwing etc., all defined in the sibling MeanTickTypes.cs — and the shell
-# files still to come (MeanTickExits.cs, MeanTickStrategy.cs) will reach across the
-# same way — so a per-file `nt8c check` reports false CS0246/CS0103 on every one of
-# those names, on every edit. Two tools prove two different things and neither alone
-# is the whole gate:
+# file (MeanTickStrategy.cs) reaches across the same way, PLUS its own
+# `using MeanTickCore;` line reports a false CS0246 on the namespace itself (nt8c
+# can't see that a sibling file declares it — documented at design.md:93-94, same
+# pattern as VeeSnapStrategy.cs:58). Do not "fix" a shell file by collapsing
+# namespaces; fix the gate instead. So a per-file `nt8c check` reports false
+# CS0246/CS0103 on every one of these names, on every edit. Two tools prove two
+# different things and neither alone is the whole gate:
 #   - `dotnet run --project tests` compiles the pure ninjascript/*.cs files TOGETHER
 #     (real C# semantics, no false cross-file errors) and runs the asserts. That is
 #     the actual cross-file compile check for the pure layer.
@@ -36,7 +39,7 @@ echo
 echo "== nt8c check (ninjascript/*.cs against the NT8 reference set) =="
 export PATH="$HOME/.local/bin:$PATH"
 
-siblings="$(grep -hoE '\b(class|struct|enum)\s+[A-Za-z_][A-Za-z0-9_]*' ninjascript/*.cs \
+siblings="$(grep -hoE '\b(class|struct|enum|namespace)\s+[A-Za-z_][A-Za-z0-9_]*' ninjascript/*.cs \
     | awk '{print $2}' | sort -u)"
 
 for f in ninjascript/*.cs; do
