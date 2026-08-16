@@ -71,6 +71,10 @@ namespace MeanTickCore
         {
             var plan = new MtExitPlan { Rungs = new List<MtRung>() };
             if (dir == MtDir.None || stopPoints <= 0.0 || contracts <= 0) return plan;
+            // rung2R must be strictly beyond rung1R -- design.md 5.2's table is swept as a
+            // pair, and an inverted pair puts rung 2 nearer than rung 1, which also makes the
+            // MinRungTicks spacing fold below measure the wrong distance.
+            if (rung2R <= rung1R) return plan;
 
             int sign = dir == MtDir.Long ? 1 : -1;
             plan.StopPrice = MtMath.RoundToTick(entry - sign * stopPoints, tickSize);

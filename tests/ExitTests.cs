@@ -145,6 +145,15 @@ public static class ExitTests
             T.Check(T.Rung(p, 2).IsStructural, "the fallen-through-to candidate is still flagged structural");
         }
 
+        // rung1R/rung2R monotonicity: an inverted pair (rung 2 nearer than rung 1) is
+        // rejected outright rather than silently misordering the ladder or corrupting the
+        // MinRungTicks spacing check, which assumes prices increase from prev to next.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 3.0, 1.0, 4.0,
+                                         new[] { 18055.0 }, 18120, 4, 0.25, 15);
+            T.Check(!p.Valid, "rung2R <= rung1R yields an invalid plan");
+        }
+
         // Short is the exact mirror.
         {
             var p = MtLadder.BuildLadder(MtDir.Short, 18000, 10.0, 1.0, 3.0, 4.0,

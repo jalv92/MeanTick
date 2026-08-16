@@ -77,6 +77,11 @@ def build_ladder(direc, entry, stop_points, rung1_r, rung2_r, rung3_fallback_r,
     plan = dict(valid=False, stop_price=0.0, rungs=[], total_quantity=0)
     if direc == 0 or stop_points <= 0.0 or contracts <= 0:
         return plan
+    # rung2_r must be strictly beyond rung1_r -- design.md 5.2's table is swept as a
+    # pair, and an inverted pair puts rung 2 nearer than rung 1, which also makes the
+    # min_rung_ticks spacing fold below measure the wrong distance.
+    if rung2_r <= rung1_r:
+        return plan
 
     sign = 1 if direc > 0 else -1
     plan["stop_price"] = round_to_tick(entry - sign * stop_points, tick_size)
@@ -245,6 +250,10 @@ def _demo():
     p3 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, [18015, 18055], 18120, 4, 0.25, 15)
     assert abs(p3["rungs"][2]["price"] - 18055.0) < 1e-9, "falls through to the second candidate"
     assert p3["rungs"][2]["is_structural"]
+
+    # rung2_r <= rung1_r is an inverted table and must be rejected outright.
+    inverted = build_ladder(1, 18000, 10.0, 3.0, 1.0, 4.0, [18055], 18120, 4, 0.25, 15)
+    assert not inverted["valid"], "rung2_r <= rung1_r yields an invalid plan"
 
     print("mean_tick.py: build_ladder self-check OK")
 
