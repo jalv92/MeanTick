@@ -29,8 +29,9 @@
 //
 // THE ORDER-EVENT RACE RULES THIS FILE (.claude/memory/nt8-order-event-race.md): NT8 can
 // deliver OnOrderUpdate/OnExecutionUpdate synchronously, in-stack, BEFORE the Enter*/Exit*
-// call that caused them returns. Every in-flight tracker here is written or cleared BEFORE
-// the submit/cancel that makes it true, never after.
+// call that caused them returns. Every in-flight tracker's KEY is written before the submit
+// that makes it true (a placeholder if the value itself is not known yet), and every clear
+// is checked against what an in-stack echo may have already done, never assumed absent.
 //
 // nt8c reports CS0246 on `using MeanTickCore;` below. FALSE POSITIVE, annotated at
 // VeeSnapStrategy.cs:58 -- do not "fix" it by collapsing namespaces.
@@ -81,6 +82,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double _londonHigh = double.NaN, _londonLow = double.NaN;
 
         private int    _tradesToday;
+        private bool   _cutoffFlattening;   // set BEFORE the runner-cutoff Exit* call -- suppresses
+                                             // the bracket-death guard for the sibling-rung cancels
+                                             // that flatten cascades into (see CheckRunnerCutoff)
         private MtDir  _dir = MtDir.None;
         private double _entryPrice;
         private int    _placedEtSec;
@@ -168,17 +172,36 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region OnBarUpdate
 
+        private bool _printedClockDiag;
+
         protected override void OnBarUpdate()
         {
-            bool new15 = FoldClosedBars();   // also feeds _atr4H from newly closed 4H bars
-
+            // The BarsInProgress guard comes FIRST, before anything reads Time[0] -- NT8's
+            // singular indexers are context-relative to whichever series is calling
+            // (multi_time_frame_instruments.md:290,320), so Time[0] on a 15m/4H bar-close call
+            // is THAT series' bar time, not the primary's. VeeSnapStrategy.cs:478 guards first
+            // and only then captures Time[0] (:481) to pass into its fold (:509) -- ported the
+            // same shape here: guard, capture `now` once, hand it to the fold explicitly.
             if (BarsInProgress != SeriesPrimary || CurrentBar < BarsRequiredToTrade)
                 return;
+
+            DateTime now = Time[0];
+            bool new15 = FoldClosedBars(now);   // also feeds _atr4H from newly closed 4H bars
+
+            if (!_printedClockDiag)
+            {
+                _printedClockDiag = true;
+                int diagSec = EtSecondsOfDay(now);
+                Print(Name + ": clock check -- raw Time[0]=" + now.ToString("yyyy-MM-dd HH:mm:ss")
+                    + " (Kind=" + now.Kind + ") -> computed ET " + TimeSpan.FromSeconds(diagSec).ToString(@"hh\:mm\:ss")
+                    + ". This assumes an un-Kinded bar DateTime is TimeZoneInfo.Local, not NT8's own "
+                    + "chart-display timezone -- verify this matches the chart's actual ET wall-clock time.");
+            }
 
             if (Bars.IsFirstBarOfSession)
                 ResetDailyState();
 
-            int etSec = EtSecondsOfDay(Time[0]);
+            int etSec = EtSecondsOfDay(now);
             UpdateLondonRange(etSec);
             CheckRunnerCutoff(etSec);
 
@@ -242,6 +265,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (etSec < HhmmToEtSec(RunnerCutoffEt)) return;
 
             Print(Name + ": runner cutoff (" + RunnerCutoffEt.ToString("0000") + " ET) reached -- flattening at market.");
+            // In Ladder mode with several rungs still live, this unscoped flatten makes NT8
+            // auto-cancel every OTHER rung's Set-based bracket as an OCO side effect. Set
+            // BEFORE the Exit* call so the bracket-death guard (OnOrderUpdate) does not mistake
+            // that cascade for a leg dying unprotected.
+            _cutoffFlattening = true;
             if (Position.MarketPosition == MarketPosition.Long)
                 ExitLong(SeriesPrimary, Position.Quantity, SigCutoff, "");
             else if (Position.MarketPosition == MarketPosition.Short)
@@ -252,11 +280,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         // is the ONLY thing standing between this loop and lookahead. Ported verbatim from
         // VeeSnapStrategy.cs:698-715 (Vs -> Mt). Absolute index, driven from the primary
         // branch: a per-series process pointer running a bar late on a shared timestamp was a
-        // Critical in PullbackZone.
-        private bool FoldClosedBars()
+        // Critical in PullbackZone. `now` is a caller-supplied parameter, never Time[0] read
+        // in here, because this method (like VeeSnap's FoldContextBars) must also be safe to
+        // reason about independent of which BarsInProgress happens to be live when it runs;
+        // the caller is the one place that both knows it is on the primary and captured Time[0]
+        // there (VeeSnapStrategy.cs:478,481,509).
+        private bool FoldClosedBars(DateTime now)
         {
             bool new15 = false;
-            DateTime now = Time[0];
 
             Bars b15 = BarsArray[Series15M];
             for (int j = _fold15 + 1; j < b15.Count; j++)
@@ -473,10 +504,22 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss(sig, CalculationMode.Price, plan.StopPrice, false);
                 SetProfitTarget(sig, CalculationMode.Price, r.Price);
 
+                // Placeholder KEY before the submit (nt8-order-event-race.md): a fill that
+                // lands synchronously in-stack during Enter*Limit runs OnExecutionUpdate's
+                // `_restingOrders.Remove(n)` immediately, which needs the key already present
+                // to have anything to remove. Without this, that Remove is a silent no-op and
+                // the post-call assignment below would then re-insert the already-filled order
+                // as if it were still resting -- permanently stale, since nothing fires again
+                // to clear it (and a later TTL cancel would CancelOrder() a terminal order).
+                _restingOrders[sig] = null;
                 Order o = dir == MtDir.Long
                     ? EnterLongLimit(SeriesPrimary, true, r.Quantity, entryPrice, sig)
                     : EnterShortLimit(SeriesPrimary, true, r.Quantity, entryPrice, sig);
-                _restingOrders[sig] = o;
+                // Only write the real reference if the key survived the call -- if an in-stack
+                // event already removed it (filled, or rejected/cancelled-unfilled), this must
+                // not revive it.
+                if (_restingOrders.ContainsKey(sig))
+                    _restingOrders[sig] = o;
             }
         }
 
@@ -551,6 +594,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 _dir = MtDir.None;
                 _liveRungSignals.Clear();
+                _cutoffFlattening = false;
             }
         }
 
@@ -585,7 +629,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             // leak -- this can still race a same-tick OCO cancel arriving before its sibling's
             // execution is processed (nt8-order-event-race.md); Round 3 (design.md 6.1) is
             // the actual empirical test of that ordering.
-            if ((n == "Stop loss" || n == "Profit target")
+            if (!_cutoffFlattening
+                && (n == "Stop loss" || n == "Profit target")
                 && (orderState == OrderState.Cancelled || orderState == OrderState.Rejected)
                 && _liveRungSignals.Contains(order.FromEntrySignal))
             {
@@ -689,7 +734,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Break-even", Description = "Move surviving legs' stop to entry when rung 1's target fills. Default OFF -- spec 5.4.", GroupName = "03. Exits", Order = 6)]
         public bool UseBreakEven { get; set; }
 
-        [NinjaScriptProperty]
+        [NinjaScriptProperty, Range(0, 2359)]
         [Display(Name = "Runner cutoff (ET, HHMM)", Description = "Flatten anything still open at market at this ET time -- spec 5.3.", GroupName = "03. Exits", Order = 7)]
         public int RunnerCutoffEt { get; set; }
 
