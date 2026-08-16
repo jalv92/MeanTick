@@ -35,6 +35,13 @@ namespace MeanTickCore
     // enum is what makes those two cases distinguishable in the Output window.
     public enum MtRejectReason
     {
+        // Explicit zero value on purpose: C# out-params default to the enum's underlying
+        // 0 if a future return path ever forgets to assign `diag`. Definite assignment makes
+        // that unreachable today (every path here does assign it), but if it ever slipped,
+        // the failure mode must read as "I don't know", not "everything passed" -- the latter
+        // sends the reader to look in the wrong place, which is exactly what this exists to
+        // prevent. Do not reorder the members below it; nothing here switches on the int value.
+        Unknown = 0,
         Accepted,           // a full setup: qualified 4H array + Gate 2 15m rejection.
         No4HArray,          // nothing shaped like a 4H PD array anywhere in the scanned window.
         NoFreshArray,       // 4H array(s) found, but every one is older than FreshBars4H.
@@ -277,9 +284,11 @@ namespace MeanTickCore
         // Spec 4.1's array SELECTION, not just qualification -- this decides WHETHER and
         // WHICH array a day trades off, so it belongs here, pure and tested, not in the shell
         // that cannot compile into tests/MeanTick.Tests.csproj. Scans EVERY candle in `bars`
-        // (the shell caps that list at Bars4HWindow=40, so this is at most ~38 iterations, a
-        // few times a day -- nowhere near hot-path), newest first, for every candidate that
-        // passes IsQualifiedHtf. Per-bar type priority (rejection block, then FVG, then the
+        // (the shell caps that list at Bars4HWindow=40), newest first, for every candidate
+        // that passes IsQualifiedHtf. Worst case is O(n^2), not O(n): TryOrderBlockFromFvg's
+        // own backward search runs once per FVG found in the outer loop, so the pathological
+        // case is bounded at 40^2 = 1600 -- still nowhere near hot-path at a few evaluations a
+        // day. Per-bar type priority (rejection block, then FVG, then the
         // order block anchored to that FVG) and the "most-recent-qualifying-bar wins"
         // tie-break are decisions, not mechanics -- spec 4.1 lists the three admitted types
         // but never ranks them, so this function IS that ranking. candidates[0] is what a
