@@ -24,6 +24,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds   = 30;
                 BarsRequiredToTrade         = 20;
+                // Explicit, not decorative: ByStrategyPosition resizes brackets to the
+                // whole strategy position — the exact collapse this probe measures. Left
+                // implicit, a platform-default change could produce a false "collapsed"
+                // verdict that isn't NT8 semantics at all.
+                StopTargetHandling          = StopTargetHandling.PerEntryExecution;
             }
         }
 
@@ -53,9 +58,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnExecutionUpdate(Execution execution, string executionId,
             double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
         {
-            // The whole point of the probe: print the surviving working orders every
-            // time anything fills, so the collapse (if any) is visible in the log
-            // and not only in the Orders tab.
+            // Timestamps each fill and prints the aggregate strategy position — not
+            // each leg's remaining quantity, which is what "collapsed or not" actually
+            // asks. The Orders tab, not this log, is the evidence for per-leg quantity.
             Print(string.Format("{0} EXEC {1} qty={2} px={3} | position={4} {5}",
                 time, execution.Order.Name, quantity, price,
                 Position.MarketPosition, Position.Quantity));
