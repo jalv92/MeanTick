@@ -397,6 +397,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private MtExitPlan BuildPlan(MtDir dir, double entryPrice)
         {
+            MtExitPlan plan;
             if (ExitMode == MtExitMode.Ladder)
             {
                 // Spec 5.2's closed rung-3 universe: a 15m FVG (consequent encroachment) or its
@@ -405,10 +406,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // one that also clears rung 2 and falls back to Rung3FallbackR if none does.
                 List<double> structuralCandidates = MtDetect.FindStructuralCandidates(_bars15M, dir, entryPrice, TickSize);
                 double runnerPrice = dir == MtDir.Long ? _londonHigh : _londonLow;
-                return MtLadder.BuildLadder(dir, entryPrice, StopPoints, RungR1, RungR2, Rung3FallbackR,
+                plan = MtLadder.BuildLadder(dir, entryPrice, StopPoints, RungR1, RungR2, Rung3FallbackR,
                                              structuralCandidates, runnerPrice, Contracts, TickSize, MinRungTicks);
             }
-            return MtLadder.BuildSingleTarget(dir, entryPrice, StopPoints, SingleTargetR, Contracts, TickSize);
+            else
+            {
+                plan = MtLadder.BuildSingleTarget(dir, entryPrice, StopPoints, SingleTargetR, Contracts, TickSize);
+            }
+
+            // A qualifying setup that still produces an invalid plan is otherwise silent --
+            // OnBarUpdate's `if (!plan.Valid) return;` has no output. RungR1/RungR2 sit inside
+            // their own independent [0.1, 20] Range so NT8 cannot express "RungR2 > RungR1" as a
+            // property constraint; an inverted pair (or any other guard in BuildLadder/
+            // BuildSingleTarget) would otherwise leave the strategy running a whole session doing
+            // nothing with no line explaining why.
+            if (!plan.Valid)
+                Print(Name + ": WARNING -- a qualifying setup (" + dir + " @ " + entryPrice.ToString("0.00")
+                    + ") produced an INVALID exit plan and was skipped. Check RungR1 < RungR2 and the "
+                    + "other BuildLadder/BuildSingleTarget guards.");
+
+            return plan;
         }
 
         #endregion
