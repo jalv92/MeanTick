@@ -163,6 +163,64 @@ namespace MeanTickCore
             if (atr <= 0.0) return false;
             return Math.Abs(price - array.Level) <= proximityAtrMult * atr;
         }
+
+        // Spec 4.1's array SELECTION, not just qualification -- this decides WHETHER and
+        // WHICH array a day trades off, so it belongs here, pure and tested, not in the shell
+        // that cannot compile into tests/MeanTick.Tests.csproj. Scans the last freshBars closed
+        // 4H candles, newest first, for every candidate that passes IsQualifiedHtf. Per-bar
+        // type priority (rejection block, then FVG, then the order block anchored to that FVG)
+        // and the "most-recent-qualifying-bar wins" tie-break are decisions, not mechanics --
+        // spec 4.1 lists the three admitted types but never ranks them, so this function IS
+        // that ranking. candidates[0] is what a caller uses as "the" qualified array; the rest
+        // exist so a caller can also implement A1's cluster-skip (spec 4.6) without re-scanning.
+        //
+        // The startIdx floor of 2 (below) means a candidate anchored at bar index 0 or 1 can
+        // never be found by this scan, even though TryRejectionBlock itself does not need the
+        // two bars before it. That is a non-issue in practice: IsQualifiedHtf's own freshness
+        // gate and this scan's currentIdx - freshBars floor agree once `bars` has at least
+        // ATR(14)'s warm-up worth of history, which every real caller already requires before
+        // calling this at all (WilderAtr.IsWarm) -- the floor only ever binds on a `bars` list
+        // shorter than that, i.e. never in live/backtest operation.
+        public static List<MtArray> FindQualifiedHtfCandidates(IList<MtBar> bars, double price,
+                                                                double tickSize, int freshBars,
+                                                                double atr, double proximityAtrMult,
+                                                                int minWickTicks, double wickRatioMax)
+        {
+            var found = new List<MtArray>();
+            int n = bars == null ? 0 : bars.Count;
+            if (n == 0) return found;
+
+            int currentIdx = n - 1;
+            int startIdx = Math.Max(2, currentIdx - freshBars);
+
+            for (int i = currentIdx; i >= startIdx; i--)
+            {
+                MtBar bar = bars[i];
+
+                MtArray rb;
+                if (TryRejectionBlock(bar, i, MtDir.Long, tickSize, minWickTicks, wickRatioMax, out rb)
+                    && IsQualifiedHtf(rb, currentIdx, price, freshBars, atr, proximityAtrMult))
+                    found.Add(rb);
+                if (TryRejectionBlock(bar, i, MtDir.Short, tickSize, minWickTicks, wickRatioMax, out rb)
+                    && IsQualifiedHtf(rb, currentIdx, price, freshBars, atr, proximityAtrMult))
+                    found.Add(rb);
+
+                if (i < 2) continue;
+
+                MtArray fvg;
+                if (!TryFvg(bars[i - 2], bars[i - 1], bar, i, 0.0, tickSize, out fvg))
+                    continue;
+
+                if (IsQualifiedHtf(fvg, currentIdx, price, freshBars, atr, proximityAtrMult))
+                    found.Add(fvg);
+
+                MtArray ob;
+                if (TryOrderBlockFromFvg(bars, i - 2, fvg.Dir, 0, tickSize, out ob)
+                    && IsQualifiedHtf(ob, currentIdx, price, freshBars, atr, proximityAtrMult))
+                    found.Add(ob);
+            }
+            return found;
+        }
     }
 
     public enum MtWindowState { Closed, Open, SecondChance }

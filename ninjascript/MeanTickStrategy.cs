@@ -328,7 +328,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #endregion
 
-        #region Detection (shell-side scan; every rule itself lives in MtDetect)
+        #region Detection (the shell only gathers bars/ATR and calls MtDetect -- every rule,
+        // including WHICH 4H array is chosen, lives in the pure layer so it can be tested)
 
         private bool TryDetect(out MtDir dir, out double entryPrice)
         {
@@ -338,11 +339,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
 
             double price = Close[0];
-            List<MtArray> candidates = FindQualifiedHtfCandidates(price);
+            // The array SELECTION (priority + tie-break) is pure and tested --
+            // MtDetect.FindQualifiedHtfCandidates's own comment explains the ordering.
+            List<MtArray> candidates = MtDetect.FindQualifiedHtfCandidates(
+                _bars4H, price, TickSize, FreshBars4H, _atr4H.Value, ProximityAtrMult, MinWickTicks, WickRatioMax);
             if (candidates.Count == 0)
                 return false;
 
-            MtArray htf = candidates[0];   // most recent qualifying 4H array -- see the method's own note
+            MtArray htf = candidates[0];   // the chosen array -- most recent qualifying, per its own priority
 
             if (UseClusterSkip)
             {
@@ -379,49 +383,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             dir = block15.Dir;
             entryPrice = block15.Level;
             return true;
-        }
-
-        // Scans the last FreshBars4H closed 4H candles, newest first, for every candidate array
-        // that passes IsQualifiedHtf (freshness + proximity). Per-bar type priority (rejection
-        // block, then FVG, then the order block anchored to that FVG) is our own tie-break --
-        // spec 4.1 lists the three admitted types but never ranks them. candidates[0] is the
-        // one used for gate 1; the rest exist only to feed the cluster-skip check above.
-        private List<MtArray> FindQualifiedHtfCandidates(double price)
-        {
-            var found = new List<MtArray>();
-            int n = _bars4H.Count;
-            if (n == 0) return found;
-
-            int currentIdx = n - 1;
-            int startIdx = Math.Max(2, currentIdx - FreshBars4H);
-
-            for (int i = currentIdx; i >= startIdx; i--)
-            {
-                MtBar bar = _bars4H[i];
-
-                MtArray rb;
-                if (MtDetect.TryRejectionBlock(bar, i, MtDir.Long, TickSize, MinWickTicks, WickRatioMax, out rb)
-                    && MtDetect.IsQualifiedHtf(rb, currentIdx, price, FreshBars4H, _atr4H.Value, ProximityAtrMult))
-                    found.Add(rb);
-                if (MtDetect.TryRejectionBlock(bar, i, MtDir.Short, TickSize, MinWickTicks, WickRatioMax, out rb)
-                    && MtDetect.IsQualifiedHtf(rb, currentIdx, price, FreshBars4H, _atr4H.Value, ProximityAtrMult))
-                    found.Add(rb);
-
-                if (i < 2) continue;
-
-                MtArray fvg;
-                if (!MtDetect.TryFvg(_bars4H[i - 2], _bars4H[i - 1], bar, i, 0.0, TickSize, out fvg))
-                    continue;
-
-                if (MtDetect.IsQualifiedHtf(fvg, currentIdx, price, FreshBars4H, _atr4H.Value, ProximityAtrMult))
-                    found.Add(fvg);
-
-                MtArray ob;
-                if (MtDetect.TryOrderBlockFromFvg(_bars4H, i - 2, fvg.Dir, 0, TickSize, out ob)
-                    && MtDetect.IsQualifiedHtf(ob, currentIdx, price, FreshBars4H, _atr4H.Value, ProximityAtrMult))
-                    found.Add(ob);
-            }
-            return found;
         }
 
         #endregion

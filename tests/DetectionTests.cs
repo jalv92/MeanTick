@@ -243,6 +243,53 @@ public static class DetectionTests
             T.Check(!MtDetect.IsQualifiedHtf(a, 101, 18000, 5, 40.0, 1.5), "an invalid array never qualifies");
         }
 
+        T.Section("HTF candidate selection");
+
+        // FindQualifiedHtfCandidates moved out of the shell (was untested there, and the shell
+        // cannot compile into this project) because it IS a decision, not mechanics: which of
+        // several qualifying arrays a day trades off. Two things pinned here: the per-bar-type
+        // priority (a bar that qualifies as both a rejection block AND an FVG returns the
+        // rejection block first) and the "most-recent-qualifying-bar wins" tie-break across bars.
+
+        // Same bar, two qualifying types at once. Bar 2 is a clean Short rejection block
+        // (bodyTop=18010, reject=20, opposite=2, ratio=0.1, level=18020 -- same shape as the
+        // rejection-block section above) AND the 'c' bar of a bearish FVG against bar 0
+        // (c.High=18030 < a.Low=18040, gap=10, level=18035). Bar 1 is unread by TryFvg and
+        // produces no order block (its own Close is not opposite-closing), so exactly these
+        // two candidates exist.
+        {
+            var bars = new List<MtBar> {
+                B(18050, 18055, 18040, 18048),   // a
+                B(18045, 18048, 18035, 18040),   // b (unread by TryFvg)
+                B(18010, 18030, 17998, 18000),   // c -- rejection block AND FVG's newest bar
+            };
+            var found = MtDetect.FindQualifiedHtfCandidates(bars, 18025, 0.25, 5, 100.0, 1.5, 8, 0.33);
+            T.Check(found.Count == 2, "both a rejection block and an FVG qualify on the same bar");
+            T.Check(found[0].Kind == MtArrayKind.RejectionBlock, "rejection block wins the per-bar-type priority");
+            T.Check(found[1].Kind == MtArrayKind.Fvg, "the FVG on the same bar is still returned, just second");
+        }
+
+        // Two DIFFERENT bars, each independently a qualifying rejection block: an older one at
+        // index 3 (Long, level 17980) and the newest, current bar at index 7 (Short, level
+        // 18020). Every other bar is an inert doji (Open==Close fails both RB directions, and
+        // its range is too tight to ever pair into an FVG with its neighbors) so the two real
+        // candidates are the only output -- this isolates the tie-break from the priority rule
+        // above instead of re-testing it.
+        {
+            MtBar filler = B(18000, 18000.5, 17999.5, 18000);
+            var bars = new List<MtBar> {
+                filler, filler, filler,
+                B(18000, 18003, 17960, 18002),   // index 3: older Long rejection block, level 17980
+                filler, filler, filler,
+                B(18010, 18030, 17998, 18000),   // index 7 (current): newer Short rejection block, level 18020
+            };
+            var found = MtDetect.FindQualifiedHtfCandidates(bars, 18000, 0.25, 5, 100.0, 1.5, 8, 0.33);
+            T.Check(found.Count == 2, "only the two real candidates are found, fillers produce nothing");
+            T.Check(found[0].BarIndex == 7, "the most recent qualifying bar wins the top slot");
+            T.CheckBits(found[0].Level, 18020.0, "...and it is the newer level, not the older one");
+            T.Check(found[1].BarIndex == 3, "the older candidate is still found, just not first");
+        }
+
         T.Section("session window");
 
         T.Check(MtSession.Window(9 * 3600 + 29 * 60) == MtWindowState.Closed,      "09:29 is closed");
