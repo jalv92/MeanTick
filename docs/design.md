@@ -486,15 +486,28 @@ Profit target Cancel submitted -> Cancelled @29754.25   <- the runner's own targ
   working stops while rung 1 closed. That is the independence Phase 0a could never observe until
   now. **H1 (per-signal brackets die when a sibling closes) is refuted by data.** Per-signal
   `Set*` bracket independence is CONFIRMED on the stop side.
-- **A real defect was found and fixed in the same pass, not a platform failure.** Note the
-  ordering: `Profit target Filled` → `POSITION` → `Stop loss Cancelled` → `EXEC` — the execution
-  callback arrives *after* the OCO cancel. The shell's bracket-death guard removed a rung's
-  signal from its live-tracking set in `OnExecutionUpdate`, so when `OnOrderUpdate` saw the
-  sibling's `Cancelled` first, the signal still read "live" and the guard false-fired — exactly
-  the race its own comment predicted this round would test. Fixed by moving the removal to
-  `OnOrderUpdate`'s own `Filled` handling, ahead of the sibling `Cancelled`. The four WARNING
-  lines this run produced are the guard's own bug, not evidence of anything wrong with NT8 or
-  the bracket architecture — recorded here so a future reader does not mistake them for one.
+- **Two real defects were found and fixed, not a platform failure.** Both are the guard's own
+  bugs, not evidence of anything wrong with NT8 or the bracket architecture — recorded here so a
+  future reader does not mistake the WARNING lines they produced for one.
+  1. **The order-event race.** Note the ordering: `Profit target Filled` → `POSITION` →
+     `Stop loss Cancelled` → `EXEC` — the execution callback arrives *after* the OCO cancel. The
+     guard removed a rung's signal from its live-tracking set in `OnExecutionUpdate`, so when
+     `OnOrderUpdate` saw the sibling's `Cancelled` first, the signal still read "live" and the
+     guard false-fired — exactly the race its own comment predicted this round would test. This
+     is the failure this run's four WARNING lines actually document. Fixed (`c3ac518`) by moving
+     the removal to `OnOrderUpdate`'s own `Filled` handling, ahead of the sibling `Cancelled`; the
+     documentation (`onorderupdate.md:20`) confirms that is the *documented*-correct place, not
+     only the empirically-correct one — internal strategy logic runs between `OnOrderUpdate` and
+     `OnExecutionUpdate` specifically to make cases like this possible.
+  2. **A second, independent bug, found by a follow-up investigation, not by this run's log.**
+     `OnExecutionUpdate` returned early on `execution.Order == null` before ever reaching the
+     `Position.MarketPosition == Flat` clearing block. `execution.md:11` documents that
+     `ExitOnSessionClose` executions carry no `Order` — so that flatten's clearing never ran, and
+     every bracket cancel after it would false-fire the guard, unconditionally, no race required.
+     Fixed (`5448a4c`) by moving the Flat-clearing above the null check, and hardened further:
+     the guard now also requires `Position.MarketPosition != Flat`, closing the same class of bug
+     for any other administrative mass-cancel (e.g. `StartBehavior.WaitUntilFlat`'s
+     historical→realtime cleanup) rather than patching each cancel source individually.
 
 **NOT established — read this half with equal weight:**
 - **These were Playback fills, and they were optimistic.** Targets at 29587 and 29604.75 both
@@ -506,7 +519,12 @@ Profit target Cancel submitted -> Cancelled @29754.25   <- the runner's own targ
 **Net effect on the verdict.** §6.1's K-independent-entry-signals architecture (as shipped, with
 `Set*` brackets) is now validated on **both** sides — target (run 1) and stop (this run). The
 one thing genuinely still unobserved is a bracket dying on a rung whose own exit has *not*
-filled; the bracket-death guard (§6.3), now itself fixed, remains the mitigation for that case.
+filled; the bracket-death guard (§6.3), now fixed for both defects above, remains the mitigation
+for that case — with one documented ceiling: NT8 gives the guard no discriminator on a cancel
+(`OrderState.Cancelled` looks identical whether a bracket died alone or was swept by a flatten),
+so it can be made to stop crying wolf on paths we know about, but it cannot in general prove
+which of those two happened. `TraceOrders`/`OnOrderTrace` and the NT8 trace log are the only
+documented route to that answer, and neither is wired in.
 
 #### Proposed alternative — settled: not adopted
 
