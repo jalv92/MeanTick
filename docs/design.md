@@ -309,6 +309,53 @@ the trades that pay.
 **This is measured before anything is built** — see §9, Phase 0a. If the probe shows the legs collapse
 even under this design, the entire exit architecture changes and this section is rewritten.
 
+#### Phase 0a result (2026-08-16)
+
+`probe/LadderProbe.cs` run live in NT8 Market Replay, NQ, entry 29840.25:
+
+```
+6:44:00 PM EXEC PR1           qty=1 px=29840.25 | position=Long 1
+6:44:00 PM EXEC PR2           qty=1 px=29840.25 | position=Long 2
+6:44:00 PM EXEC PR3           qty=1 px=29840.25 | position=Long 3
+6:50:00 PM EXEC Profit target qty=1 px=29845.25 | position=Long 2
+6:52:00 PM EXEC Profit target qty=1 px=29850.25 | position=Long 1
+7:08:00 PM EXEC Profit target qty=1 px=29860.25 | position=Flat 0
+```
+
+All three legs filled at one price, building the position to Long 3. Each target price
+matches only its own leg's rung — 29845.25 (+5 pts = 20 ticks, PR1), 29850.25 (+10 pts = 40
+ticks, PR2), 29860.25 (+20 pts = 80 ticks, PR3) — and each target execution stepped the
+position down by exactly qty=1: 3 → 2 → 1 → 0.
+
+**Verdict: CONFIRMED — the legs keep their own quantity.** Had NT8 resized surviving exit
+orders to the remaining position, the first target to fill would have closed all 3 (or the
+second would have closed the remaining 2), and the position would have jumped straight to
+Flat. It did not. PR3 stayed working for 16 minutes after PR2 closed and filled at its own
+80-tick target — the runner surviving independently of its siblings, which is the behaviour
+the whole ladder design exists for, now observed rather than assumed. This validates §6.1's
+K-independent-entry-signals architecture and, with it, §5.2's rung schedule; Tasks 7 and 8
+are unblocked.
+
+Two limits of this evidence, stated so they aren't overclaimed:
+- **No stop was hit in this run.** Target-side independence is confirmed; whether a
+  sibling leg's *stop* is amended or cancelled when another leg closes is still
+  unobserved. Open question for the first Replay run of the real strategy.
+- **This was a Replay/realtime run, not the Strategy Analyzer.** NT8's documented
+  exit-quantity resize (`nt8-educational/reference/historical_order_backfill_logic.md:136-141`)
+  is scoped to *historical backfill*, i.e. the Analyzer. This run says nothing about whether
+  the Analyzer reproduces a ladder faithfully — that remains open and must be checked before
+  any Analyzer result on the real strategy is trusted.
+
+The probe ran with `StopTargetHandling` at NT8's implicit default (`PerEntryExecution`).
+Fix round 1 of Task 0 pins that value explicitly in the probe source, so this observed
+per-entry behaviour is what the setting now locks in rather than what a future
+platform-default change could silently drift away from.
+
+`probe/` is deliberately **not deleted**: this result closes the Replay/realtime half of the
+question but leaves the Strategy Analyzer half open, and rebuilding the instrument to answer
+it later would waste the half already spent building it. It stays in the tree until the
+Analyzer question is also closed.
+
 ### 6.2 Data series
 
 Primary 1-minute, plus `AddDataSeries` 15-minute and 240-minute. Order of the calls is the index —
