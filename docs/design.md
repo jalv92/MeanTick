@@ -246,7 +246,7 @@ anything.
 | 1 | 25% | entry ± 1.0R | fixed — pays for the trade |
 | 2 | 25% | entry ± 3.0R | fixed — the V5 "bread and butter" target |
 | 3 | 25% | first opposing PD array on the 15m series | structural |
-| 4 | 25% | runner — see §5.3 | structural + trail |
+| 4 | 25% | runner — see §5.3 | structural (trail DEFERRED, not in v1) |
 
 The mix is deliberate. The two fixed rungs reproduce the two targets the source actually teaches and
 need zero new detection. The two structural rungs implement the reason he gives for taking partials at
@@ -258,9 +258,11 @@ this rule a day with no clean level leaves the rung orphaned and the ladder sile
 
 **The rung level universe is closed.** Across the recaps the source targets thirteen different level
 types. Rung 3 admits exactly two: a 15-minute fair value gap (entry at its consequent encroachment) or
-a 15-minute order block (entry at its mean threshold), whichever is nearer in the trade's direction. An
-open universe would always find a rung a few points away and the ladder would fit the tape rather than
-test it.
+a 15-minute order block (entry at its mean threshold) — the NEAREST candidate to entry that also clears
+rung 2, falling back to `Rung3FallbackR` when none of them do (`MtDetect.FindStructuralCandidates`
+returns every ahead-of-entry candidate nearest-first; `MtLadder.BuildLadder` walks the list and takes
+the first that lies beyond rung 2, not just the single nearest one). An open universe would always find
+a rung a few points away and the ladder would fit the tape rather than test it.
 
 **"Opposing" means positionally ahead of price, not polarity-mismatched.** The rung-3 candidate scan
 filters on where a level SITS — ahead of entry in the trade's direction — not on the array's own
@@ -274,10 +276,14 @@ bar and is pure commission.
 
 **Rung 1 hit rate is a real risk, not a footnote.** Phase 0b (`docs/validation.md`) measured that
 50.0% of hypothetical 09:30–11:00 entries on this tape never reach `1.0R` — rung 1's own distance —
-before the stop, on the tape's unconditional distribution. This does not retire the ladder (Phase 0b's
-own bimodality test passed), but it is carried forward here as a live number to size expectations
-against: half of MeanTick's real entries, if they resemble this tape at all, may never fill rung 1
-either, independent of whether the ladder helps once a trade does move.
+before the stop, on the tape's unconditional distribution. This does not retire the ladder — the
+pre-registered bimodality ratio (3R-8R density / 1R-2R density) cleared its 0.15 threshold at 0.164 —
+but the clearance is narrow (9% above threshold) and `validation.md` is explicit that the shape is not
+textbook bimodality, just a heavy tail on an otherwise-monotone distribution; read the pass as "the
+tail has enough mass to matter for a runner," not as two separate populations. Carried forward here as
+a live number to size expectations against either way: half of MeanTick's real entries, if they
+resemble this tape at all, may never fill rung 1, independent of whether the ladder helps once a trade
+does move.
 
 ### 5.3 The runner
 
@@ -531,12 +537,16 @@ median gap is under ~10 points, *which* array is chosen sits inside the noise of
 backtest of "the 50% of the chosen array" can distinguish the model from tape-fitting. Decides whether
 A1 (§4.6) ships ON, OFF, or inverted as a confluence filter.
 
-**Sample arithmetic, to be done now and not at the end.** MeanTick fires at most 1–2 times per session.
-The house gate needs ≥100 out-of-sample trades. PropSim holds 275 sessions of real ticks; after
-removing no-setup days and an honest train/test split, the count may not reach 100. If it does not,
-the answer is collecting forward Replay sessions — a calendar commitment, decided before building, not
-discovered after. `.claude/memory/nt8-market-replay-nrd.md` records the retention floor on this machine
-and must be consulted as part of this arithmetic.
+**Sample arithmetic — measured, not projected (`docs/validation.md`).** MeanTick fires at most 1–2
+times per session. The house gate needs ≥100 out-of-sample trades. Of 238 RTH sessions, only 56
+(23.5%) had even one in-window candidate on the FVG-only proxy detector, for 65 candidates total; a
+60/40 chronological train/test split leaves **~26 out-of-sample candidates — the stop condition
+fires.** Even a generous 3x multiplier for the two array types the proxy can't see yet (order blocks,
+rejection blocks) lands at ~78, still short of 100. **This does not clear the gate on the tape already
+on disk, under any plausible reading of the approximation.** The answer is collecting forward Replay
+sessions — a calendar commitment, decided before building, not discovered after.
+`.claude/memory/nt8-market-replay-nrd.md` records this machine's measured ~90-day retention floor;
+every week without a new recorded/downloaded session is tape this project cannot get back.
 
 **Gates.** `.claude/memory/strategy-profitability-gates.md` is the bar, out-of-sample only, and the
 2026-08 ledger stands at 36 rows — any new claim on this tape needs |t| > 3.2.
