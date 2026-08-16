@@ -661,19 +661,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            // A bracket leg FILLING closes that rung -- remove it from `_liveRungSignals` HERE,
+            // in OnOrderUpdate, not only in OnExecutionUpdate. Phase 0a round 3's order log
+            // (design.md 6.1) showed the OCO sibling's Cancelled event arrives BEFORE
+            // OnExecutionUpdate processes the fill: "Profit target Filled -> POSITION -> Stop
+            // loss Cancelled -> EXEC". Removing only in OnExecutionUpdate left the signal still
+            // "live" when the guard below saw that Cancelled, so it false-positived on every
+            // normal rung close. This does not weaken the guard: it still fires for a bracket
+            // dying on a rung whose OWN exit has not filled, which remains unobserved.
+            if ((n == "Stop loss" || n == "Profit target") && orderState == OrderState.Filled)
+                _liveRungSignals.Remove(order.FromEntrySignal);
+
             // Bracket-death guard (design.md 6.3; pattern from RlpLongStrategy.cs:339-372,
-            // adapted). Phase 0a confirmed target-side independence but the stop side has
-            // never once been observed filling or surviving a sibling's close -- this is what
-            // converts "Javier notices on the chart, eventually" into a log line at the
-            // instant it happens. Scoped PER RUNG via `_liveRungSignals`, not
-            // Position.MarketPosition: with K independent brackets, a sibling rung's own
-            // normal OCO close (target fills -> that rung's stop auto-cancels) would otherwise
-            // false-positive on every single rung fill, since the OTHER rungs keep the
-            // aggregate position non-flat. A rung already removed from `_liveRungSignals`
-            // (its own exit already filled, or its entry never filled) is a benign echo, not a
-            // leak -- this can still race a same-tick OCO cancel arriving before its sibling's
-            // execution is processed (nt8-order-event-race.md); Round 3 (design.md 6.1) is
-            // the actual empirical test of that ordering.
+            // adapted). Phase 0a round 3 CONFIRMED per-signal stop-side independence (design.md
+            // 6.1) -- this is what converts "Javier notices on the chart, eventually" into a
+            // log line at the instant something actually IS wrong. Scoped PER RUNG via
+            // `_liveRungSignals`, not Position.MarketPosition: with K independent brackets, a
+            // sibling rung's own normal OCO close (target fills -> that rung's stop
+            // auto-cancels) would otherwise false-positive on every single rung fill, since the
+            // OTHER rungs keep the aggregate position non-flat. A rung already removed from
+            // `_liveRungSignals` (its own exit already filled, above, or its entry never
+            // filled) is a benign echo, not a leak.
             if (!_cutoffFlattening
                 && (n == "Stop loss" || n == "Profit target")
                 && (orderState == OrderState.Cancelled || orderState == OrderState.Rejected)
