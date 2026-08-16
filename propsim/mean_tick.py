@@ -49,6 +49,13 @@ def round_to_tick(px, tick):
     """
     if tick <= 0:
         return px
+    # C#'s Math.Floor(NaN) returns NaN, silently -- Python's math.floor() returns
+    # an int and RAISES on NaN (int(nan) is undefined). NaN is a real input here
+    # (the "no level" sentinel for structural_price/runner_price), so this guard
+    # is what keeps the two engines agreeing on the one case Python's stdlib
+    # diverges on, rather than one throwing where the other returns a sentinel.
+    if math.isnan(px):
+        return px
     return math.floor(px / tick + 0.5) * tick
 
 
@@ -76,17 +83,26 @@ def build_ladder(direc, entry, stop_points, rung1_r, rung2_r, rung3_fallback_r,
     p2 = round_to_tick(entry + sign * stop_points * rung2_r, tick_size)
     fallback = round_to_tick(entry + sign * stop_points * rung3_fallback_r, tick_size)
 
+    # Round before comparing, never after: a raw candidate that lies fractionally
+    # beyond p2 but ROUNDS onto p2 (or short of it) must not be treated as "beyond".
+    # Comparing raw-vs-rounded let a level like 18030.1 pass the raw check and then
+    # round down onto p2 (18030.0), emitting a duplicate rung at an identical price.
+    structural_rounded = round_to_tick(structural_price, tick_size)
+    runner_rounded = round_to_tick(runner_price, tick_size)
+
     # A structural level is used only when it exists AND lies beyond rung 2 in
     # the trade's direction. Anything else falls back, so a missing or
     # nonsensical level never silently shortens the ladder.
-    structural_ok = not math.isnan(structural_price) and sign * (structural_price - p2) > 0.0
-    p3 = round_to_tick(structural_price, tick_size) if structural_ok else fallback
+    structural_ok = not math.isnan(structural_rounded) and sign * (structural_rounded - p2) > 0.0
+    p3 = structural_rounded if structural_ok else fallback
 
-    runner_ok = not math.isnan(runner_price) and sign * (runner_price - p3) > 0.0
-    p4 = (round_to_tick(runner_price, tick_size) if runner_ok
-          else round_to_tick(p3 + sign * stop_points * rung2_r, tick_size))
+    runner_ok = not math.isnan(runner_rounded) and sign * (runner_rounded - p3) > 0.0
+    p4 = runner_rounded if runner_ok else round_to_tick(p3 + sign * stop_points * rung2_r, tick_size)
 
     prices = [p1, p2, p3, p4]
+    # Slot 3 here holds runner_ok, not "is rung 3 structural" -- it is only safe
+    # because index 3 is only ever consumed when last == True, where the
+    # "and not last" below zeroes it back out.
     structural = [False, False, structural_ok, runner_ok]
 
     # Allocate first, then drop: a rung that is dropped for spacing folds its
@@ -205,6 +221,16 @@ def _demo():
     assert abs(r["price"] - 18010.0) < 1e-9
     assert abs(plan["stop_price"] - 17990.0) < 1e-9
     assert round_to_tick(18000.13, 0.25) == 18000.25
+
+    # Round-before-compare: 18030.1 lies 0.1pt beyond the RAW p2 (18030.0) but
+    # ROUNDS onto it. Comparing raw-vs-rounded would pass the "beyond p2" check
+    # and then round down onto a duplicate of rung 2 -- ninjascript/MeanTickExits.cs
+    # fixed exactly this. min_rung_ticks=0 so the spacing fold can't mask it.
+    p2 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, 18030.1, 18120, 4, 0.25, 0)
+    assert abs(p2["rungs"][2]["price"] - 18040.0) < 1e-9, "rung 3 falls back to 4R, not a p2 duplicate"
+    assert p2["rungs"][2]["price"] != p2["rungs"][1]["price"]
+    assert not p2["rungs"][2]["is_structural"]
+
     print("mean_tick.py: build_ladder self-check OK")
 
 
