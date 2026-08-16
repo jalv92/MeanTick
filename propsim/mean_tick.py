@@ -247,8 +247,11 @@ def _demo():
     # Falls through past a rejected candidate to the next-best one: 18015 is nearer to
     # entry but short of p2 (18030), so it must be skipped in favor of 18055 -- a caller
     # that could only hand over ONE candidate could never express this.
-    p3 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, [18015, 18055], 18120, 4, 0.25, 15)
-    assert abs(p3["rungs"][2]["price"] - 18055.0) < 1e-9, "falls through to the second candidate"
+    # p2=18030. 18015 is nearer but short of p2, so it's skipped; that leaves TWO clearing
+    # candidates (18055, 18090) -- pins "nearest clearing", not just "any clearing", since a
+    # single-clearing-candidate fixture can't distinguish first-clearing from last-clearing.
+    p3 = build_ladder(1, 18000, 10.0, 1.0, 3.0, 4.0, [18015, 18055, 18090], 18120, 4, 0.25, 15)
+    assert abs(p3["rungs"][2]["price"] - 18055.0) < 1e-9, "falls through to the NEAREST clearing candidate, not the farthest"
     assert p3["rungs"][2]["is_structural"]
 
     # rung2_r <= rung1_r is an inverted table and must be rejected outright.

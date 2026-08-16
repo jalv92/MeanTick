@@ -136,12 +136,15 @@ public static class ExitTests
         }
 
         // The fix this whole move exists for: a caller handing over ONE already-filtered
-        // price could only accept or reject it. 18015 is nearer to entry but short of p2
-        // (18030) -- it must be skipped in favor of 18055, the next candidate in the list.
+        // price could only accept or reject it. p2=18030. 18015 is nearer to entry but short of
+        // p2, so it's skipped. That leaves TWO candidates that clear p2 -- 18055 and 18090 --
+        // which is the case that actually pins "nearest, not farthest": a mutant that walked the
+        // list backward, or returned the LAST clearing candidate instead of the first, would
+        // still pass a fixture with only one clearing candidate.
         {
             var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
-                                         new[] { 18015.0, 18055.0 }, 18120, 4, 0.25, 15);
-            T.CheckBits(T.Rung(p, 2).Price, 18055.0, "falls through a rejected nearer candidate to the next one");
+                                         new[] { 18015.0, 18055.0, 18090.0 }, 18120, 4, 0.25, 15);
+            T.CheckBits(T.Rung(p, 2).Price, 18055.0, "falls through a rejected nearer candidate to the NEAREST clearing one, not the farthest");
             T.Check(T.Rung(p, 2).IsStructural, "the fallen-through-to candidate is still flagged structural");
         }
 

@@ -15,6 +15,12 @@
 #   - `dotnet run --project tests` compiles the pure files together and runs the
 #     asserts -- the logic is correct, not just that it compiles. It also writes
 #     tests/golden_ladder.csv, which compare_mirror.py reads next.
+#   - `python3 propsim/mean_tick.py` is mean_tick.py's OWN self-check (_demo() +
+#     _demo_resolve_ladder()) -- rules that exist only on the Python side (or that
+#     the three golden-CSV fixtures don't exercise, like the rung1R/rung2R
+#     monotonicity guard and a multi-candidate structural fall-through) were
+#     otherwise never run by this gate at all; compare_mirror.py only checks
+#     agreement on what golden_ladder.csv happens to contain.
 #   - `python3 research/compare_mirror.py` is the ladder-schedule parity gate
 #     (C# MtLadder.BuildLadder vs the Python mirror). Nothing else runs it, and
 #     this hook rewrites golden_ladder.csv on every ninjascript/*.cs edit, so
@@ -32,6 +38,12 @@ status=0
 
 echo "== dotnet run --project tests =="
 if ! dotnet run --project tests; then
+    status=1
+fi
+
+echo
+echo "== python3 propsim/mean_tick.py (module self-check) =="
+if ! python3 propsim/mean_tick.py; then
     status=1
 fi
 
