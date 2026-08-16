@@ -117,5 +117,108 @@ public static class DetectionTests
                                        0.25, 8, 0.33, out a);
             T.CheckBits(a.Level, 18017.50, "level is rounded to tick before it leaves the core");
         }
+
+        T.Section("4H fair value gap");
+
+        // Ported arithmetic (VeeSnapCore.cs:455-467), exercised directly against the new
+        // (a,b,c) signature: gap up = demand below (bullish), gap down = supply above
+        // (bearish). Bar b is the FVG's middle candle and is never touched by the gap
+        // comparison -- that matches the source, which reads only the outer two bars.
+        {
+            MtArray a;
+            bool ok = MtDetect.TryFvg(B(18018, 18030, 18015, 18028), B(18028, 18060, 18026, 18058),
+                                      B(18058, 18075, 18035, 18070), 7, 0.0, 0.25, out a);
+            T.Check(ok, "bullish gap (low[c] > high[a]) qualifies");
+            T.Check(a.Dir == MtDir.Long, "gap up is a Long array");
+            T.CheckBits(a.Top, 18035.0, "top is the newest bar's low");
+            T.CheckBits(a.Bottom, 18030.0, "bottom is the oldest bar's high");
+            T.CheckBits(a.Level, 18032.5, "level is the consequent encroachment, 50% of the gap");
+            T.Check(a.Kind == MtArrayKind.Fvg, "kind is fvg");
+        }
+
+        // Mirror bearish gap: high[c] < low[a].
+        {
+            MtArray a;
+            bool ok = MtDetect.TryFvg(B(18100, 18110, 18090, 18095), B(18085, 18090, 18070, 18075),
+                                      B(18065, 18080, 18055, 18060), 7, 0.0, 0.25, out a);
+            T.Check(ok, "bearish gap (high[c] < low[a]) qualifies");
+            T.Check(a.Dir == MtDir.Short, "gap down is a Short array");
+            T.CheckBits(a.Level, 18085.0, "level is the consequent encroachment, 50% of the gap");
+        }
+
+        // A gap narrower than minHeight is not a qualifying array -- same bars as the
+        // bullish case above (gap = 5), gated at minHeight = 10.
+        {
+            MtArray a;
+            bool ok = MtDetect.TryFvg(B(18018, 18030, 18015, 18028), B(18028, 18060, 18026, 18058),
+                                      B(18058, 18075, 18035, 18070), 7, 10.0, 0.25, out a);
+            T.Check(!ok, "gap smaller than minHeight is rejected");
+        }
+
+        // Overlapping candles leave no gap on either side.
+        {
+            MtArray a;
+            bool ok = MtDetect.TryFvg(B(18000, 18010, 17995, 18005), B(18005, 18015, 17998, 18008),
+                                      B(18000, 18012, 17994, 18006), 7, 0.0, 0.25, out a);
+            T.Check(!ok, "overlapping bars produce no fair value gap");
+        }
+
+        T.Section("4H order block via FVG");
+
+        // Bullish FVG across bars 5,6,7: low[7] > high[5]. The order block is the LAST
+        // down-close candle at or before bar 5. Bar 4 closes up, bar 3 closes DOWN -> bar 3.
+        // Bar 3: O=18010 H=18015 L=17995 C=18000 -> mean threshold = (18015+17995)/2 = 18005.
+        {
+            var bars = new List<MtBar>();
+            bars.Add(B(17980, 17990, 17970, 17985)); // 0
+            bars.Add(B(17985, 17995, 17975, 17990)); // 1
+            bars.Add(B(17990, 18000, 17985, 17995)); // 2
+            bars.Add(B(18010, 18015, 17995, 18000)); // 3  <- last down-close before the impulse
+            bars.Add(B(18000, 18020, 17998, 18018)); // 4  up close
+            bars.Add(B(18018, 18030, 18015, 18028)); // 5  FVG first bar
+            bars.Add(B(18028, 18060, 18026, 18058)); // 6
+            bars.Add(B(18058, 18075, 18035, 18070)); // 7  low 18035 > high[5] 18030 -> bullish FVG
+
+            MtArray ob;
+            bool ok = MtDetect.TryOrderBlockFromFvg(bars, 5, MtDir.Long, 0, 0.25, out ob);
+            T.Check(ok, "bullish order block is located from the FVG, not from a displacement threshold");
+            T.Check(ob.BarIndex == 3, "it is the LAST down-close candle before the impulse");
+            T.CheckBits(ob.Level, 18005.0, "level is the mean threshold, 50% of the candle's range");
+            T.Check(ob.Kind == MtArrayKind.OrderBlock, "kind is order block");
+        }
+
+        // No opposite-close candle anywhere before the impulse -> no order block, and the
+        // function must say so rather than returning bar 0 as a consolation prize.
+        {
+            var bars = new List<MtBar>();
+            for (int i = 0; i < 8; i++) bars.Add(B(18000 + i, 18005 + i, 17999 + i, 18004 + i));
+            MtArray ob;
+            bool ok = MtDetect.TryOrderBlockFromFvg(bars, 5, MtDir.Long, 0, 0.25, out ob);
+            T.Check(!ok, "no opposite-close candle means no order block");
+        }
+
+        T.Section("HTF qualification");
+
+        // Freshness: formed within the last FreshBars4H candles.
+        {
+            var a = new MtArray { Valid = true, BarIndex = 100, Level = 18000, Dir = MtDir.Long };
+            T.Check( MtDetect.IsQualifiedHtf(a, 104, 18000, 5, 40.0, 1.5), "4 bars old is fresh at FreshBars=5");
+            T.Check(!MtDetect.IsQualifiedHtf(a, 106, 18000, 5, 40.0, 1.5), "6 bars old is stale");
+        }
+
+        // Proximity: |price - level| <= ProximityAtrMult * ATR(14) on the 4H series.
+        // ATR 40, mult 1.5 -> 60 points of tolerance.
+        {
+            var a = new MtArray { Valid = true, BarIndex = 100, Level = 18000, Dir = MtDir.Long };
+            T.Check( MtDetect.IsQualifiedHtf(a, 101, 18059, 5, 40.0, 1.5), "59 points away is within 1.5*ATR");
+            T.Check(!MtDetect.IsQualifiedHtf(a, 101, 18061, 5, 40.0, 1.5), "61 points away is too far");
+            T.Check( MtDetect.IsQualifiedHtf(a, 101, 18060, 5, 40.0, 1.5), "exactly 1.5*ATR passes");
+        }
+
+        // An invalid array never qualifies, whatever the distances say.
+        {
+            var a = new MtArray { Valid = false, BarIndex = 100, Level = 18000 };
+            T.Check(!MtDetect.IsQualifiedHtf(a, 101, 18000, 5, 40.0, 1.5), "an invalid array never qualifies");
+        }
     }
 }

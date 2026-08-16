@@ -79,5 +79,89 @@ namespace MeanTickCore
             array.Valid    = true;
             return true;
         }
+
+        // 3-bar imbalance, ported byte-for-byte from VeeSnapCore.cs:455-467 (the gap
+        // arithmetic only -- `minHeight` here is the caller's already-computed threshold,
+        // not an ATR multiplier, so this function does no ATR scaling of its own). The
+        // bearish case is `c.High < a.Low`, NOT a loose overlap test: the strict spelling
+        // is what the source and its Python mirror pin. Bar b, the FVG's middle candle, is
+        // never read -- the classic 3-candle definition compares only the outer two bars.
+        public static bool TryFvg(MtBar a, MtBar b, MtBar c, int cBarIndex,
+                                  double minHeight, double tickSize, out MtArray array)
+        {
+            array = new MtArray();
+
+            if (c.Low > a.High && c.Low - a.High >= minHeight)
+            {
+                array.Kind     = MtArrayKind.Fvg;
+                array.Dir      = MtDir.Long;
+                array.Top      = c.Low;
+                array.Bottom   = a.High;
+                array.Level    = MtMath.RoundToTick((array.Top + array.Bottom) * 0.5, tickSize);
+                array.BarIndex = cBarIndex;
+                array.Time     = c.Time;
+                array.Valid    = true;
+                return true;
+            }
+            if (c.High < a.Low && a.Low - c.High >= minHeight)
+            {
+                array.Kind     = MtArrayKind.Fvg;
+                array.Dir      = MtDir.Short;
+                array.Top      = a.Low;
+                array.Bottom   = c.High;
+                array.Level    = MtMath.RoundToTick((array.Top + array.Bottom) * 0.5, tickSize);
+                array.BarIndex = cBarIndex;
+                array.Time     = c.Time;
+                array.Valid    = true;
+                return true;
+            }
+            return false;
+        }
+
+        // The order block is defined THROUGH the FVG rather than through a "displacement"
+        // threshold. The conventional wording -- "the last opposite candle before a
+        // displacement leg" -- smuggles in a free parameter, because displacement has no
+        // agreed definition and three different ad-hoc versions already exist in this tree.
+        // Anchoring to the gap the move left behind reuses a detector that is already ported,
+        // mirrored and tested, and removes the dial entirely. Spec 4.1.
+        public static bool TryOrderBlockFromFvg(IList<MtBar> bars, int fvgFirstIndex,
+                                                MtDir dir, int baseIndex, double tickSize,
+                                                out MtArray array)
+        {
+            array = new MtArray();
+            if (bars == null || fvgFirstIndex < 0 || fvgFirstIndex >= bars.Count) return false;
+            if (dir == MtDir.None) return false;
+
+            for (int i = fvgFirstIndex; i >= 0; i--)
+            {
+                MtBar b = bars[i];
+                bool opposite = dir == MtDir.Long ? b.Close < b.Open : b.Close > b.Open;
+                if (!opposite) continue;
+
+                array.Kind     = MtArrayKind.OrderBlock;
+                array.Dir      = dir;
+                array.Top      = b.High;
+                array.Bottom   = b.Low;
+                array.Level    = MtMath.RoundToTick((b.High + b.Low) * 0.5, tickSize);
+                array.BarIndex = baseIndex + i;
+                array.Time     = b.Time;
+                array.Valid    = true;
+                return true;
+            }
+            return false;
+        }
+
+        // Spec 4.1. Freshness is the source's "most recent four or five 4H candles";
+        // proximity is its undefined "within a reasonable distance", pre-registered here as
+        // an ATR multiple and NOT swept in the first pass -- sweeping an undefined constant
+        // is how the 2026-08 funnel produced fourteen corpses.
+        public static bool IsQualifiedHtf(MtArray array, int currentBarIndex, double price,
+                                          int freshBars, double atr, double proximityAtrMult)
+        {
+            if (!array.Valid) return false;
+            if (currentBarIndex - array.BarIndex > freshBars) return false;
+            if (atr <= 0.0) return false;
+            return Math.Abs(price - array.Level) <= proximityAtrMult * atr;
+        }
     }
 }
