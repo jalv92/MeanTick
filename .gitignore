@@ -1,0 +1,17 @@
+# dotnet test runner output
+bin/
+obj/
+
+# Python
+__pycache__/
+*.pyc
+
+# Run artifacts. The VERDICT of a run belongs in docs/validation.md; the raw
+# dump does not belong in git at all.
+*.jsonl
+artifacts/
+data/
+
+# Agent hand-off reports: the repo keeps the amendment, not the write-up of it.
+docs/.*-report.md
+.superpowers/
