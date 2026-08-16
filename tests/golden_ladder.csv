@@ -1,0 +1,9 @@
+fixture,dir,entry,stop,rung_index,price,qty,is_structural,is_runner
+rung1_only,Long,18000,17990,1,18010,1,false,true
+all_rungs,Long,18000.13,17990.25,1,18010.25,1,false,false
+all_rungs,Long,18000.13,17990.25,2,18030.25,1,false,false
+all_rungs,Long,18000.13,17990.25,3,18040.25,1,false,false
+all_rungs,Long,18000.13,17990.25,4,18120,1,false,true
+stop_between_rungs,Long,18000,17990,1,18010,1,false,false
+stop_between_rungs,Long,18000,17990,2,18030,1,false,false
+stop_between_rungs,Long,18000,17990,3,18120,2,false,true

@@ -53,5 +53,165 @@ public static class ExitTests
             T.CheckBits(p.Rungs[0].Price, 18033.25, "target is rounded to tick");
             T.CheckBits(p.StopPrice, 17990.25, "stop is rounded to tick too");
         }
+
+        T.Section("ladder K=4");
+
+        // The textbook plan. Long 18000, stop 10, 4 contracts, structural rung at 18055,
+        // runner at 18120. Rungs: 1R=18010, 3R=18030, 18055, 18120.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         18055, 18120, 4, 0.25, 15);
+            T.Check(p.Valid, "plan is valid");
+            T.Check(p.Rungs.Count == 4, "K=4");
+            T.CheckBits(p.Rungs[0].Price, 18010.0, "rung 1 at 1R");
+            T.CheckBits(p.Rungs[1].Price, 18030.0, "rung 2 at 3R");
+            T.CheckBits(p.Rungs[2].Price, 18055.0, "rung 3 is the structural level");
+            T.CheckBits(p.Rungs[3].Price, 18120.0, "rung 4 is the runner");
+            T.Check(p.Rungs[2].IsStructural, "rung 3 is flagged structural");
+            T.Check(p.Rungs[3].IsRunner, "rung 4 is flagged runner");
+            for (int i = 0; i < 4; i++) T.Check(p.Rungs[i].Quantity == 1, "each rung carries 1 of 4");
+            T.Check(p.TotalQuantity == 4, "quantities sum to contracts");
+        }
+
+        // Spec 5.2 fallback: no structural level -> rung 3 becomes a fixed 4R. Without this,
+        // a day with no clean level silently leaves the ladder at K=3 with an orphan contract.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         double.NaN, 18120, 4, 0.25, 15);
+            T.Check(p.Rungs.Count == 4, "still K=4 when the structural level is missing");
+            T.CheckBits(p.Rungs[2].Price, 18040.0, "rung 3 falls back to 4R");
+            T.Check(!p.Rungs[2].IsStructural, "the fallback rung is not flagged structural");
+        }
+
+        // No runner target either -> the runner falls back to the far side of the fallback,
+        // and the plan stays whole rather than dropping a contract on the floor.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         double.NaN, double.NaN, 4, 0.25, 15);
+            T.Check(p.Rungs.Count == 4, "still K=4 with no structural and no runner target");
+            T.Check(p.TotalQuantity == 4, "no contract is lost");
+            T.Check(p.Rungs[3].IsRunner, "the last rung is still the runner");
+        }
+
+        // MinRungTicks: a rung within 15 ticks (3.75 points) of the previous one is DROPPED
+        // and its quantity folds into the next. Below that spacing a rung does not clear the
+        // house's >=$5/contract bar and is pure commission.
+        // Structural at 18032 is 2 points (8 ticks) above rung 2 at 18030 -> folded.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         18032, 18120, 4, 0.25, 15);
+            T.Check(p.Rungs.Count == 3, "a too-close rung is dropped");
+            T.Check(p.Rungs[2].Quantity == 2, "its quantity folds into the next rung");
+            T.Check(p.TotalQuantity == 4, "total quantity is preserved by the fold");
+        }
+
+        // A structural level BEHIND the entry is nonsense and must not become a rung.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         17950, 18120, 4, 0.25, 15);
+            T.CheckBits(p.Rungs[2].Price, 18040.0, "a structural level behind entry falls back to 4R");
+        }
+
+        // Short is the exact mirror.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Short, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         17945, 17880, 4, 0.25, 15);
+            T.CheckBits(p.StopPrice,     18010.0, "short stop");
+            T.CheckBits(p.Rungs[0].Price, 17990.0, "short rung 1 at 1R");
+            T.CheckBits(p.Rungs[1].Price, 17970.0, "short rung 2 at 3R");
+            T.CheckBits(p.Rungs[2].Price, 17945.0, "short structural rung");
+            T.CheckBits(p.Rungs[3].Price, 17880.0, "short runner");
+        }
+
+        // Quantity remainder: 6 contracts over 4 rungs is 2/2/1/1, never 1/1/1/1 with two lost.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         18055, 18120, 6, 0.25, 15);
+            T.Check(p.TotalQuantity == 6, "6 contracts are all allocated");
+            T.Check(p.Rungs[0].Quantity == 2 && p.Rungs[1].Quantity == 2, "the remainder goes to the near rungs");
+            T.Check(p.Rungs[2].Quantity == 1 && p.Rungs[3].Quantity == 1, "the far rungs take the base share");
+        }
+
+        // Fewer contracts than rungs: K shrinks to the contract count rather than emitting
+        // zero-quantity orders, which NT8 would reject at submission.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                         18055, 18120, 2, 0.25, 15);
+            T.Check(p.Rungs.Count == 2, "K shrinks to the contract count");
+            T.Check(p.Rungs[p.Rungs.Count - 1].IsRunner, "the last surviving rung is still the runner");
+            T.Check(p.TotalQuantity == 2, "quantities still sum to contracts");
+        }
+
+        // Off-grid inputs: the K=4 path must round every emitted price too, not just the
+        // control arm from Task 6. entry=18000.13 and runner=18120.07 are not on the 0.25
+        // grid; if RoundToTick were skipped anywhere in BuildLadder these numbers would show
+        // raw fractional prices no MNQ order could actually submit at.
+        {
+            var p = MtLadder.BuildLadder(MtDir.Long, 18000.13, 10.0, 1.0, 3.0, 4.0,
+                                         double.NaN, 18120.07, 4, 0.25, 15);
+            T.CheckBits(p.StopPrice,      17990.25, "off-grid stop rounds to tick");
+            T.CheckBits(p.Rungs[0].Price, 18010.25, "off-grid rung 1 rounds to tick");
+            T.CheckBits(p.Rungs[1].Price, 18030.25, "off-grid rung 2 rounds to tick");
+            T.CheckBits(p.Rungs[2].Price, 18040.25, "off-grid fallback rung 3 rounds to tick");
+            T.CheckBits(p.Rungs[3].Price, 18120.0,  "off-grid runner rounds to tick");
+            T.Check(p.TotalQuantity == 4, "off-grid fixture still allocates all contracts");
+        }
+
+        T.Section("golden ladder CSV (three named fixtures for the Python mirror)");
+        {
+            string csvPath = GoldenCsvPath();
+            using (var w = new System.IO.StreamWriter(csvPath, false))
+            {
+                w.WriteLine("fixture,dir,entry,stop,rung_index,price,qty,is_structural,is_runner");
+
+                // rung1_only: fewer contracts than rungs collapses the ladder to a single
+                // surviving rung -- still flagged as the runner, since it is the last one left.
+                var rung1Only = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                                     18055, 18120, 1, 0.25, 15);
+                WriteGoldenLadderRow(w, "rung1_only", MtDir.Long, 18000, rung1Only);
+
+                // all_rungs: the full K=4 textbook plan, with an off-grid entry and runner so
+                // this fixture actually exercises RoundToTick end to end -- on-grid inputs would
+                // pass even if a rounding call were silently dropped.
+                var allRungs = MtLadder.BuildLadder(MtDir.Long, 18000.13, 10.0, 1.0, 3.0, 4.0,
+                                                    double.NaN, 18120.07, 4, 0.25, 15);
+                WriteGoldenLadderRow(w, "all_rungs", MtDir.Long, 18000.13, allRungs);
+
+                // stop_between_rungs: the structural level sits inside MinRungTicks of rung 2
+                // and is folded away, so K drops to 3 and the runner absorbs the folded qty.
+                var stopBetween = MtLadder.BuildLadder(MtDir.Long, 18000, 10.0, 1.0, 3.0, 4.0,
+                                                       18032, 18120, 4, 0.25, 15);
+                WriteGoldenLadderRow(w, "stop_between_rungs", MtDir.Long, 18000, stopBetween);
+            }
+            T.Check(System.IO.File.Exists(csvPath), "golden_ladder.csv was written");
+        }
+    }
+
+    // Resolves to the tests/ source directory regardless of the process's working
+    // directory, so the golden CSV always lands next to this file in the repo -- not
+    // in whatever bin/ folder `dotnet run` happens to use as cwd.
+    private static string GoldenCsvPath([System.Runtime.CompilerServices.CallerFilePath] string thisFile = "")
+    {
+        return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(thisFile), "golden_ladder.csv");
+    }
+
+    private static void WriteGoldenLadderRow(System.IO.StreamWriter w, string fixture, MtDir dir, double entry, MtExitPlan p)
+    {
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        foreach (var r in p.Rungs)
+        {
+            w.WriteLine(string.Join(",", new[]
+            {
+                fixture,
+                dir.ToString(),
+                entry.ToString("R", ic),
+                p.StopPrice.ToString("R", ic),
+                r.Index.ToString(ic),
+                r.Price.ToString("R", ic),
+                r.Quantity.ToString(ic),
+                r.IsStructural ? "true" : "false",
+                r.IsRunner ? "true" : "false"
+            }));
+        }
     }
 }

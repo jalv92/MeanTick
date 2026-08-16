@@ -55,5 +55,82 @@ namespace MeanTickCore
             plan.Valid         = true;
             return plan;
         }
+
+        // Spec 5.2. Two fixed rungs reproduce the two targets the source actually teaches
+        // and need zero detection; two structural rungs implement the reason he gives for
+        // taking partials at all -- "just in case we didn't make it to that gap" (V4 [7:33]).
+        // The rungs insure a far magnet that may not be reached.
+        //
+        // The ladder does NOT reduce risk. All rungs share one entry price and one stop, so
+        // the maximum loss is identical to the control arm. Rungs trade tail upside for hit
+        // rate; any claim that they are 'safer' is wrong (spec 8).
+        public static MtExitPlan BuildLadder(MtDir dir, double entry, double stopPoints,
+                                             double rung1R, double rung2R, double rung3FallbackR,
+                                             double structuralPrice, double runnerPrice,
+                                             int contracts, double tickSize, int minRungTicks)
+        {
+            var plan = new MtExitPlan { Rungs = new List<MtRung>() };
+            if (dir == MtDir.None || stopPoints <= 0.0 || contracts <= 0) return plan;
+
+            int sign = dir == MtDir.Long ? 1 : -1;
+            plan.StopPrice = MtMath.RoundToTick(entry - sign * stopPoints, tickSize);
+
+            double p1 = MtMath.RoundToTick(entry + sign * stopPoints * rung1R, tickSize);
+            double p2 = MtMath.RoundToTick(entry + sign * stopPoints * rung2R, tickSize);
+            double fallback = MtMath.RoundToTick(entry + sign * stopPoints * rung3FallbackR, tickSize);
+
+            // A structural level is used only when it exists AND lies beyond rung 2 in the
+            // trade's direction. Anything else falls back, so a missing or nonsensical level
+            // never silently shortens the ladder.
+            bool structuralOk = !double.IsNaN(structuralPrice)
+                                && sign * (structuralPrice - p2) > 0.0;
+            double p3 = structuralOk ? MtMath.RoundToTick(structuralPrice, tickSize) : fallback;
+
+            bool runnerOk = !double.IsNaN(runnerPrice) && sign * (runnerPrice - p3) > 0.0;
+            double p4 = runnerOk
+                ? MtMath.RoundToTick(runnerPrice, tickSize)
+                : MtMath.RoundToTick(p3 + sign * stopPoints * rung2R, tickSize);
+
+            var prices     = new double[] { p1, p2, p3, p4 };
+            var structural = new bool[]   { false, false, structuralOk, runnerOk };
+
+            // Allocate first, then drop: a rung that is dropped for spacing folds its
+            // quantity forward so the position is always fully covered.
+            int k = Math.Min(4, contracts);
+            var qty = new int[4];
+            int baseQty = contracts / k;
+            int extra   = contracts - baseQty * k;
+            for (int i = 0; i < k; i++) qty[i] = baseQty + (i < extra ? 1 : 0);
+
+            double minGap = minRungTicks * tickSize;
+            double prev   = entry;
+            int carried   = 0;
+
+            for (int i = 0; i < k; i++)
+            {
+                bool last = i == k - 1;
+                // The runner is never dropped: it is the rung the whole design is for.
+                if (!last && Math.Abs(prices[i] - prev) < minGap)
+                {
+                    carried += qty[i];
+                    continue;
+                }
+
+                plan.Rungs.Add(new MtRung
+                {
+                    Index        = plan.Rungs.Count + 1,
+                    Price        = prices[i],
+                    Quantity     = qty[i] + carried,
+                    IsStructural = structural[i] && !last,
+                    IsRunner     = last
+                });
+                carried = 0;
+                prev    = prices[i];
+            }
+
+            for (int i = 0; i < plan.Rungs.Count; i++) plan.TotalQuantity += plan.Rungs[i].Quantity;
+            plan.Valid = plan.TotalQuantity == contracts;
+            return plan;
+        }
     }
 }
